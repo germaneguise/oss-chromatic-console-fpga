@@ -2,3 +2,7 @@ esp32t/impl/gwsynthesis/*
 esp32t/impl/pnr/*
 esp32t/impl/temp/*
 esp32t/build/*
+esp32t/sim/*/obj_dir/
+esp32t/sim/*/obj_tb_*/
+esp32t/sim/*/obj_*/
+esp32t/sim/*/*.err

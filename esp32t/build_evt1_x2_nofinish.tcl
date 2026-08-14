@@ -51,4 +51,4 @@ add_file -type verilog "src/rtl/USB/USBUVCUART/sync_fifo/sync_tx_pkt_fifo.v"
 
 add_file -type verilog "src/gowin_pll_preevt/gowin_pll.v"
 add_file -type verilog "src/top.v"
-run all
+

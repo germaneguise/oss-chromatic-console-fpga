@@ -46,7 +46,19 @@
 
 module fifo_video_rtl #(
     parameter DW = 8,
-    parameter AW = 12               // 4096 entries (2 BSRAM at 8 bits wide)
+    parameter AW = 12,              // 4096 entries (2 BSRAM at 8 bits wide)
+    // Set when WrClk and RdClk are the same net. With UVC_RESTAMP, uvc_restamp
+    // already crosses the raster into pClk, so usbuvcuart_top drives
+    // .WrClk(vClk) with vClk == pClk and the stage-1 crossing crosses a clock
+    // to itself - gray-coded pointers and two-flop synchronisers doing nothing,
+    // the same redundancy 9e87e48 removed from the USB endpoint FIFOs.
+    //
+    // It is not merely wasteful. Rnum reports the deep FIFO only, so bytes
+    // parked in the crossing are invisible to the terminating packet's
+    // Rnum + HEADER_SIZE length, and the consumer covers that blind spot by
+    // delaying end-of-frame (pEofDly). Bypassing the stage removes the
+    // uncounted staging entirely rather than waiting it out.
+    parameter SINGLE_CLOCK = 0
 )(
     input  [DW-1:0]   Data,
     input             Reset,        // asserted in the WrClk domain (RESET_IN | h_sof)
@@ -92,25 +104,45 @@ module fifo_video_rtl #(
 
     reg [1:0] rrst_sr = 2'b11;
     always @(posedge RdClk) rrst_sr <= {rrst_sr[0], wrst_long};
-    wire rrst = rrst_sr[1];
+    // One clock means no crossing to stretch for, and the two-flop delay would
+    // only postpone the deep FIFO's reset past the write pointer's - which is
+    // the direction that swallows the first bytes of a frame.
+    wire rrst = SINGLE_CLOCK ? Reset : rrst_sr[1];
 
     // ------------------------------------------------ stage 1: the crossing
     wire [DW-1:0] cdc_q;
     wire          cdc_empty, cdc_full;
     wire [4:0]    cdc_rcount;
     wire          sync_full;
-    wire          cdc_rd = !cdc_empty && !sync_full;   // drain continuously
+    wire          deep_wren;
+    wire [DW-1:0] deep_data;
 
-    fifo_video_cdc #(.DW(DW), .AW(4)) u_cdc (
-        .WrClk (WrClk), .wrst (wrst), .WrEn (WrEn && !cdc_full), .Data (Data),
-        .RdClk (RdClk), .rrst (rrst), .RdEn (cdc_rd),            .Q    (cdc_q),
-        .Empty (cdc_empty), .Full (cdc_full), .RCount (cdc_rcount)
-    );
+    generate
+    if (SINGLE_CLOCK) begin : gen_no_cdc
+        // Straight through: the writer feeds the deep FIFO in its own domain,
+        // so nothing is ever staged outside what Rnum reports.
+        assign deep_wren  = WrEn && !sync_full;
+        assign deep_data  = Data;
+        assign cdc_q      = {DW{1'b0}};
+        assign cdc_empty  = 1'b1;
+        assign cdc_full   = sync_full;
+        assign cdc_rcount = 5'd0;
+    end else begin : gen_cdc
+        wire cdc_rd = !cdc_empty && !sync_full;   // drain continuously
+        fifo_video_cdc #(.DW(DW), .AW(4)) u_cdc (
+            .WrClk (WrClk), .wrst (wrst), .WrEn (WrEn && !cdc_full), .Data (Data),
+            .RdClk (RdClk), .rrst (rrst), .RdEn (cdc_rd),            .Q    (cdc_q),
+            .Empty (cdc_empty), .Full (cdc_full), .RCount (cdc_rcount)
+        );
+        assign deep_wren = cdc_rd;
+        assign deep_data = cdc_q;
+    end
+    endgenerate
 
     // ------------------------------------------- stage 2: the deep buffering
     fifo_video_sync #(.DW(DW), .AW(AW)) u_deep (
         .clk   (RdClk), .rst (rrst),
-        .WrEn  (cdc_rd), .Data (cdc_q),
+        .WrEn  (deep_wren), .Data (deep_data),
         .RdEn  (RdEn),   .Q    (Q),
         .Rnum  (Rnum),   .Empty (Empty), .Full (sync_full),
         .AlmostFullTh (AlmostFullTh),

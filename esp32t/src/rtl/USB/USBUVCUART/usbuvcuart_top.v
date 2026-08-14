@@ -21,6 +21,14 @@ module usbuvcuart_top(
 
     input   [7:0]       playerNum,
 
+`ifdef UVC_DUAL_RES
+    /* Which frame descriptor the host committed to, 1 or 2. The video source
+       has to render the matching geometry - this design has no scaler, so the
+       raster it is fed IS the frame. Only present on dual-resolution builds;
+       with one frame descriptor there is nothing to choose. */
+    output  [7:0]       uvc_frame_index,
+`endif
+
     output              UART_TXD   ,
     input               UART_RXD   ,
     output              E_UART_DTR   , // when UART_RTS = 0, UART This Device Ready to receive.
@@ -261,7 +269,20 @@ module usbuvcuart_top(
      */
     `define HSSUPPORT
     //`define MFRAME_PACKETS3
-    //`define MFRAME_PACKETS2
+    `define MFRAME_PACKETS2
+
+    /* Declared here rather than beside the other Set Interface wiring below,
+       because the packet FSM needs it: uvc_iface_alter is the alt setting the
+       HOST selected, and only alt 2 has an endpoint with a second transaction
+       reserved. Promising DATA1 while the host sits on alt 1 promises a
+       transaction it will never issue an IN token for. */
+    wire [7:0] uvc_iface_alter;
+`ifdef UVC_DUAL_RES
+    wire       uvc_hbw_active = (uvc_iface_alter == 8'd2);
+`else
+    wire       uvc_hbw_active = 1'b1;
+`endif
+
     reg [3:0] iso_pid_data;
     always @(posedge pClk) begin
         if(RESET_IN) begin
@@ -296,19 +317,55 @@ module usbuvcuart_top(
                         iso_pid_data <= (iso_pid_data == 4'b0111) ? 4'b1011 : ((iso_pid_data == 4'b1011) ? 4'b0011 : iso_pid_data);//DATA2(0111) -> DATA1(1011) -> DATA0(0011)
                     end
                 `elsif MFRAME_PACKETS2
+                    /* High-bandwidth ISO counts transactions REMAINING in the
+                       microframe, so two packets are DATA1 then DATA0. DATA2
+                       announces three and a host rejects the sequence.
+                       Previously this arm set DATA2 unconditionally after the
+                       if/else, clobbering it - and would not compile anyway,
+                       see the extra paren fixed below. */
+                    /* DATA1 is a PROMISE: it tells the host a second
+                       transaction follows in this microframe. Deciding it from
+                       uvc_fifo_aempty breaks that promise, because "not almost
+                       empty" is not "holds two packets" - aempty has its own
+                       threshold, unrelated to the 2*(PACKET_SIZE-HEADER_SIZE)
+                       bytes two transactions actually consume. Measured on the
+                       wire: 293 microframes correctly DATA1->DATA0, but 14 that
+                       sent DATA1 alone. The host honours the promise, sees a
+                       truncated high-bandwidth sequence and discards the frame,
+                       which is why frames totalling exactly dwMaxVideoFrameSize
+                       still rendered nothing.
+
+                       Gate it on the occupancy that actually matters. pLastPacket
+                       forces DATA0 because the closing packet is by definition
+                       the only one left in its microframe. */
+                    /* +1 FOR THE PRELOAD BYTE. Two transactions consume
+                       2*(PACKET_SIZE-HEADER_SIZE) = 2024 bytes of payload, but
+                       the first also pops ONE EXTRA to preload the
+                       continuation's opening byte (see uvc_fifo_rden's
+                       || DATA1 term), so it takes 1013 not 1012.
+
+                       At Rnum exactly 2024 the promise is made, the preload
+                       fires, and the second transaction then arms with
+                       2024-1013 = 1011 - one short of the 1012 Almost_Full
+                       threshold. It falls into the no-read branch, never
+                       consumes the preloaded byte, and the frame ends one byte
+                       short of dwMaxVideoFrameSize. The host discards it whole.
+
+                       Measured: defective frames pop exactly one more byte than
+                       good ones (rden%64 37 vs 36) with popped+Rnum conserved
+                       at 184320 in both, so the byte is popped and orphaned
+                       rather than lost in the FIFO. 31% of frames at 320x288,
+                       costing a third of the frame rate. */
                     if (usb_sof) begin
-                        if (uvc_fifo_afull) begin
-                            iso_pid_data <= 4'b0111;//DATA2
-                        end
-                        else if (uvc_fifo_aempty) begin
-                            iso_pid_data <= 4'b0011;//DATA0
+                        if (uvc_hbw_active && !pLastPacket &&
+                            (uvc_fifo_rnum >= (2*(PACKET_SIZE - HEADER_SIZE) + 1))) begin
+                            iso_pid_data <= 4'b1011;//DATA1 - two really are available
                         end
                         else begin
-                            iso_pid_data <= 4'b1011;//DATA1
+                            iso_pid_data <= 4'b0011;//DATA0 - only one to send
                         end
-                        iso_pid_data <= 4'b0111;//DATA2
                     end
-                    else if (v_txact_fall)) begin
+                    else if (v_txact_fall) begin
                         iso_pid_data <= (iso_pid_data == 4'b1011) ? 4'b0011 : iso_pid_data;//DATA1(1011) -> DATA0(0011)
                     end
                 `else
@@ -327,7 +384,7 @@ module usbuvcuart_top(
     wire       interface_update;
 
     wire [7:0] uart_iface_alter;
-    wire [7:0] uvc_iface_alter;
+    /* uvc_iface_alter is declared up with the packet FSM, which needs it. */
     wire [7:0] uac_iface_alter;
 
     interface_alt_select uart_interface(
@@ -611,7 +668,11 @@ module usbuvcuart_top(
         .usb_txdat(cuvc_txdat),
         .bmHint(),
         .bFormatIndex(),
+`ifdef UVC_DUAL_RES
+        .bFrameIndex(uvc_frame_index),
+`else
         .bFrameIndex(),
+`endif
         .dwFrameInterval(),
         .wKeyFrameRate(),
         .wPFrameRate(),
@@ -662,6 +723,31 @@ module usbuvcuart_top(
     parameter WIDTH             = `WIDTH;
     parameter HEIGHT            = `HEIGHT;
 
+`ifdef UVC_DUAL_RES
+    /* THE OUTPUT FRAME GEOMETRY, the one the descriptors advertise.
+
+       hImage_eof fires on hCountY == hActiveHeight-1, so the line count that
+       ENDS a frame must be the geometry actually being sent; can_write gates
+       writes to hActiveWidth pixels per line. Fixed at the larger HEIGHT,
+       selecting the shorter frame streamed pixels at the right rate and never
+       terminated - measured as 1084 full packets, 0 with EOF, no frame ever
+       delivered.
+
+       NO SYNCHRONISER NEEDED ANY MORE. This block used to live in the hClk
+       domain and had to cross bFrameIndex from pClk. With uvc_restamp ahead of
+       it the whole video pipeline is pClk, which is the domain bFrameIndex is
+       set in - so the crossing, and the class of bug that comes with it, is
+       simply gone. */
+    wire       vScale2x     = (uvc_frame_index != 8'd2);   /* frame 1 = 320x288 */
+    wire [1:0] vRep         = vScale2x ? 2'd2 : 2'd1;
+    wire [9:0] hActiveWidth  = vScale2x ? `WIDTH  : `WIDTH2;
+    wire [9:0] hActiveHeight = vScale2x ? `HEIGHT : `HEIGHT2;
+`else
+    wire [1:0] vRep          = 2'd1;
+    wire [9:0] hActiveWidth  = WIDTH;
+    wire [9:0] hActiveHeight = HEIGHT;
+`endif
+
     always @(posedge pClk) begin
         if(RESET_IN)
             pState <= IDLE;
@@ -683,13 +769,59 @@ module usbuvcuart_top(
                 pReadActive <= 0;
             end
             video_txcork <= 1'b0;
+            pContinuation <= 1'b0;   /* first transaction carries the header */
             pState <= UNCORK;
         end else if (video_txact && (pState == UNCORK)) begin
             pState <= TXACTIVE;
         end else if (~video_txact && (pState == TXACTIVE)) begin
-            pState <= IDLE;
+            `ifdef MFRAME_PACKETS2
+                /* With two transactions per microframe the state machine has to
+                   re-arm for the second one. Dropping to IDLE here leaves pState
+                   out of TXACTIVE, so pktByteCount stays 0, uvc_fifo_rden never
+                   fires and the second packet carries no payload.
+                   iso_pid_data is read before its own v_txact_fall update
+                   (nonblocking), so DATA1 here means "one more to come".
+
+                   The LENGTH must be recomputed too, not just the state. The
+                   arming above runs once per usb_sof, so a second transaction
+                   reusing the first one's video_txdat_len overruns the frame -
+                   measured as 49265 and 48623 byte frames against 46080, with
+                   ragged closing packets. rnum/afull here reflect the FIFO
+                   after the first packet drained, which is exactly the state
+                   the second packet's length should be derived from. */
+                if (iso_pid_data == 4'b0011) begin
+                    pState <= IDLE;
+                end else begin
+                    if (uvc_fifo_afull) begin
+                        video_txdat_len <= PACKET_SIZE;
+                        pLastReadActive <= 1'd0;
+                        pReadActive <= 1;
+                    end else if (pLastPacket) begin
+                        video_txdat_len <= uvc_fifo_rnum[11:0] + HEADER_SIZE;
+                        pLastReadActive <= 1'd1;
+                        pReadActive <= 1;
+                    end else begin
+                        video_txdat_len <= HEADER_SIZE;
+                        pLastReadActive <= 1'd0;
+                        pReadActive <= 0;
+                    end
+                    pContinuation <= 1'b1;  /* second one is payload-only */
+                    pState <= UNCORK;
+                end
+            `else
+                pState <= IDLE;
+            `endif
         end
     end
+
+    /* Set for the SECOND transaction of a high-bandwidth microframe. The UVC
+       payload header belongs once per PAYLOAD TRANSFER, and with
+       dwMaxPayloadTransferSize = PACKET_PER_MFRAME * PACKET_SIZE a transfer
+       spans both transactions. Emitting a header per transaction puts one 1012
+       bytes into the transfer, so the host misparses everything after it and
+       discards the frame - measured as 249 of 249 second packets starting
+       0C 8C with the first packet's PTS/SCR repeated verbatim. */
+    reg pContinuation;
 
     reg [10:0] pktByteCount;
     always@(posedge pClk)
@@ -719,20 +851,82 @@ module usbuvcuart_top(
             pts_reg <= pts_counter;
         end
 
-    wire uvc_fifo_rden = video_txpop
-                && (((pktByteCount >= (HEADER_SIZE - 1))
-                  && (pktByteCount < (PACKET_SIZE - 1)) && pReadActive));
+    /* The last byte of a packet normally does not read, because nothing more is
+       needed. When a continuation follows, that cycle is where video_txdat is
+       preloaded with pRam_q, so the FIFO must advance there too - otherwise the
+       continuation opens with the byte the preload already sent and every frame
+       runs one byte long per pair (measured 46100 against 46080). */
+    wire uvc_fifo_rden = video_txpop && pReadActive
+                && (pktByteCount >= (pContinuation ? 11'd0 : (HEADER_SIZE - 1)))
+                && ((pktByteCount < (PACKET_SIZE - 1))
+                    || (iso_pid_data == 4'b1011));
 
-    /* ================= hClk ==================
-       Get incoming YUV data, put it into FIFO */
+    /* ================= video, now pClk ==================
+       Get incoming YUV data, put it into FIFO.
+
+       THIS BLOCK USED TO RUN ON hClk. uvc_restamp below crosses the raster from
+       hClk to pClk on RGB666 - before the colour space converter - so
+       everything from the CSC onwards is in the USB domain. Three things follow
+       from that, and they are the reason for the change:
+
+         - the slow domain now carries only SOURCE-rate data. Their CSC is one
+           pixel per three clocks, which at esp32t's gClk is 2.80 Mpx/s against
+           the 5.53 a 320x288 frame needs; at 60 MHz it is 20 Mpx/s.
+         - scaling ahead of the CSC becomes affordable, so the 4:2:2 averaging
+           below is lossless for free - each averaged pair is one source pixel
+           with itself. No 4:4:4 detour.
+         - uvc_fifo becomes same-clock, and h_sof no longer races the scaler's
+           own frame boundary in another domain.
+
+       hClk itself is NOT retired: usbuac_ep still takes it as gClk, and in
+       esp32t it is the LCD feed's clock. Only the video path moved. */
+`ifdef UVC_RESTAMP
+    wire        rFrameValid, rLineValid, rEnable;
+    wire [17:0] rData;
+
+    uvc_restamp #(
+        .SRC_W(`SRC_WIDTH),
+        .SRC_H(`SRC_HEIGHT)
+    ) u_restamp (
+        .hclk          (hClk),
+        .hrst          (RESET_IN),
+        .s_frame_valid (hFrameValid),
+        .s_enable      (hEnable),
+        .s_data        (hData),
+        .pclk          (pClk),
+        .prst          (RESET_IN),
+        .rep           (vRep),
+        .m_frame_valid (rFrameValid),
+        .m_line_valid  (rLineValid),
+        .m_enable      (rEnable),
+        .m_data        (rData)
+    );
+
+    wire        vClk        = pClk;
+    wire        vFrameValid = rFrameValid;
+    wire        vLineValid  = rLineValid;
+    wire        vEnable     = rEnable;
+    wire [17:0] vData       = rData;
+    /* vClk IS pClk here, so uvc_fifo's stage-1 crossing would cross a clock to
+       itself. Bypass it: bytes staged there are not counted by Rnum, and the
+       terminating packet's length is Rnum + HEADER_SIZE. */
+    localparam VFIFO_SINGLE_CLOCK = 1;
+`else
+    wire        vClk        = hClk;
+    wire        vFrameValid = hFrameValid;
+    wire        vLineValid  = hLineValid;
+    wire        vEnable     = hEnable;
+    wire [17:0] vData       = hData;
+    localparam VFIFO_SINGLE_CLOCK = 0;
+`endif
 
     /* not really used */
     reg yLineValid_r1;
-    always@(posedge hClk)
+    always@(posedge vClk)
         yLineValid_r1 <= yLineValid;
 
     reg yFrameValid_r1;
-    always@(posedge hClk)
+    always@(posedge vClk)
         yFrameValid_r1 <= yFrameValid;
     wire h_sof = yFrameValid & ~yFrameValid_r1;
 
@@ -743,7 +937,7 @@ module usbuvcuart_top(
 
     reg [2:0] hCount3;
 
-    always@(posedge hClk)
+    always@(posedge vClk)
         if (~yEnable) begin
             hCount3 <= 3'b001;
         end else begin
@@ -760,7 +954,7 @@ module usbuvcuart_top(
 
     */
 
-    wire can_write = (hCountX < WIDTH) && yEnable;
+    wire can_write = (hCountX < hActiveWidth) && yEnable;
     /* write Vs */
     wire hEnable2 = hCount3[2] && vnu && can_write;
     /* write Us */
@@ -772,10 +966,10 @@ module usbuvcuart_top(
     wire store_v = hCount3[2] && !vnu && can_write;
 
     reg yEnable_r1;
-    always@(posedge hClk)
+    always@(posedge vClk)
         yEnable_r1  <= yEnable;
 
-    always@(posedge hClk)
+    always@(posedge vClk)
         if (h_sof) begin
             hCountX <= 'd0;
             hCountY <= 'd0;
@@ -788,7 +982,7 @@ module usbuvcuart_top(
             end else begin
                 if (yEnable_r1) begin
                     hCountY <= hCountY + 1'd1;
-                    if(hCountY == (HEIGHT - 1))
+                    if(hCountY == (hActiveHeight - 1))
                         hImage_eof <= 1'd1;
                     hCountX <= 'd0;
                 end
@@ -798,19 +992,20 @@ module usbuvcuart_top(
     wire [7:0] pRam_q;
 
     /* Input data has BGR (B in the high bits) */
-    wire [7:0] B = {hData[17:12], 2'd0};
-    wire [7:0] G = {hData[11:6], 2'd0};
-    wire [7:0] R = {hData[5:0], 2'd0};
+    /* From the restamper, not the raw port - this is the pClk side now. */
+    wire [7:0] B = {vData[17:12], 2'd0};
+    wire [7:0] G = {vData[11:6], 2'd0};
+    wire [7:0] R = {vData[5:0], 2'd0};
     wire [7:0] Y; // 8-bit output for Luma component
     wire [7:0] Cb; // 8-bit output for Chroma Blue component
     wire [7:0] Cr; // 8-bit output for Chroma Red component
 
     rgb_to_ycbcr_pipeline convert(
         .rst(RESET_IN),
-        .hClk(hClk),
-        .hLineValid(hLineValid),
-        .hEnable(hEnable),
-        .hFrameValid(hFrameValid),
+        .hClk(vClk),
+        .hLineValid(vLineValid),
+        .hEnable(vEnable),
+        .hFrameValid(vFrameValid),
         .R(R),
         .G(G),
         .B(B),
@@ -829,11 +1024,11 @@ module usbuvcuart_top(
     wire [7:0] fram_d = hEnable0 ? Y :
                         hEnable1 ? (Mu + Cb) >> 1 :
                         hEnable2 ? (Mv + Cr) >> 1 : 0;
-    always@(posedge hClk)
+    always@(posedge vClk)
         if(store_u)
             Mu <= Cb;
 
-    always@(posedge hClk)
+    always@(posedge vClk)
         if(store_v)
             Mv <= Cr;
 
@@ -841,10 +1036,10 @@ module usbuvcuart_top(
     wire Full;
     // fifo_video (Gowin encrypted IP) replaced by our RTL: CDC first,
     // then deep synchronous buffering in pClk. See fifo_video_rtl.v.
-    fifo_video_rtl uvc_fifo(
+    fifo_video_rtl #(.SINGLE_CLOCK(VFIFO_SINGLE_CLOCK)) uvc_fifo(
             .Data(fram_d), //input [7:0] Data
             .Reset(RESET_IN | h_sof), //input Reset
-            .WrClk(hClk), //input WrClk
+            .WrClk(vClk), //input WrClk
             .RdClk(pClk), //input RdClk
             .WrEn(hEnable2 | hEnable1 | hEnable0), //input WrEn
             .RdEn(uvc_fifo_rden), //input RdEn
@@ -857,6 +1052,7 @@ module usbuvcuart_top(
             .Full(Full), //output Full
             .DbgCdcCount()
             );
+
 
     /* Pull FrameValid to pClk */
     reg [4:0] pFrameValid_sr;
@@ -876,6 +1072,8 @@ module usbuvcuart_top(
     always @(posedge pClk) begin
         if(usb_sof)
             video_txdat <= HEADER_SIZE; // Header length
+        else if (video_txpop && pContinuation)
+            video_txdat <= pRam_q;      /* no header on a continuation */
         else if (video_txpop)
         case (pktByteCount)
             10'd0: begin
@@ -896,7 +1094,9 @@ module usbuvcuart_top(
             10'd10 : video_txdat <= {5'd0,sofCounts[10:8]};
             default : begin
                 if (pktByteCount >= video_txdat_len - 1)
-                    video_txdat <= HEADER_SIZE;
+                    /* DATA1 still set here means a continuation follows, and it
+                       must open with payload rather than a fresh header. */
+                    video_txdat <= (iso_pid_data == 4'b1011) ? pRam_q : HEADER_SIZE;
                 else
                     video_txdat <= pRam_q;
             end
@@ -1247,6 +1447,48 @@ module ctrl_uvc(
             bMaxVersion              <= 0;
         end else if ((header_ready) &&
                     (wIndex == `UVC_VS_INTERFACE)) begin
+`ifdef UVC_DUAL_RES
+            /* SET_CUR is where the host states which frame it wants, so a
+               device offering more than one CANNOT ignore it - the "Ignore set
+               requests" behaviour below is only safe when bFrameIndex has a
+               single legal value.
+
+               Byte 3 of the probe/commit structure is bFrameIndex. cdata_ofs
+               counts data-phase bytes and increments on the same cycle the byte
+               is valid, so byte N is on the bus when cdata_ofs == N. (The GET
+               path reads one lower because it preloads byte 0 before the first
+               txpop.)
+
+               Accepted on PROBE as well as COMMIT: the host probes with its
+               choice and expects the negotiated value echoed back, and a device
+               that answers with a different bFrameIndex than it was asked for
+               is telling the host it overrode the request. Anything other than
+               2 resolves to 1, which is also what an out-of-range index must
+               do - the reply then tells the host what it actually got. */
+            if ((bmRequestType == 8'h21) && (bRequest == `SET_CUR)
+                    && ((wValue[15:8] == `VS_PROBE_CONTROL)
+                        || (wValue[15:8] == `VS_COMMIT_CONTROL))
+                    && usb_rxact && usb_rxval && (cdata_ofs == 16'd3)) begin
+                /* dwMaxPayloadTransferSize moves with the frame, and it is what
+                   the host allocates bus bandwidth against: it picks the alt
+                   setting whose endpoint can carry this many bytes per
+                   microframe. Answering PAYLOAD_SIZE for both geometries makes
+                   160x144 reserve two transactions to carry 346 bytes, which
+                   is 16.4 MB/s held for 2.76 MB/s of video and a regression
+                   against v18.8's 8.19. One transaction covers 160x144 with
+                   room to spare; only 320x288, at 1394 bytes per microframe,
+                   genuinely needs the second. */
+                if (usb_rxdat == 8'd2) begin
+                    bFrameIndex              <= 8'd2;
+                    dwMaxVideoFrameSize      <= `MAX_FRAME_SIZE2;
+                    dwMaxPayloadTransferSize <= `PACKET_SIZE;
+                end else begin
+                    bFrameIndex              <= 8'd1;
+                    dwMaxVideoFrameSize      <= `MAX_FRAME_SIZE;
+                    dwMaxPayloadTransferSize <= `PAYLOAD_SIZE;
+                end
+            end
+`endif
             /* Ignore set requests */
             if (bmRequestType == 8'hA1) begin /* Get Resquests */
                 /* wLength == 16'd34
