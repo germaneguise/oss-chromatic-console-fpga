@@ -116,8 +116,6 @@ module top #(parameter ISSIMU=0)
     assign POWER_DOWN_IO = 1'bZ;
     assign SDIO_LS = 1'd1;
 
-    wire    BIST_failed;
-    wire    BIST_finished;
 
     assign FPGA_LED_EN = 1'd1;
 
@@ -390,8 +388,6 @@ module top #(parameter ISSIMU=0)
         .PS_DQ(PS_DQ),
         .PS_DQS(PS_DQS),
 
-        .BIST_failed(BIST_failed),
-        .BIST_finished(BIST_finished),
         .qMenuInit(qMenuInit),
         .hGBNewLine(hGBNewLine),
         .hGBAddress(hGBAddress),

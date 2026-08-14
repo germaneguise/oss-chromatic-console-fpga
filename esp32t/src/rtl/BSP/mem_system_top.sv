@@ -29,18 +29,17 @@ module mem_system_top #(parameter ISSIMU=0)
     input               hVsync,
     output              qMenuInit,
     output  [15:0]      hWrBurstQ,
-    output  [15:0]      hWrBurstQ2,
-    
-    output              BIST_failed,
-    output              BIST_finished
+    output  [15:0]      hWrBurstQ2
 );
     
-    localparam RAMPORTCOUNT = 5;
-    localparam RAMPORT_BIST = 0;
-    localparam RAMPORT_QSPI = 1;
-    localparam RAMPORT_FBRD = 2;
-    localparam RAMPORT_FBWR = 3;
-    localparam RAMPORT_FBRDOSD = 4;
+    // Was 5 with RAMPORT_BIST = 0. Must stay in lockstep with RAMPORTCOUNT in
+    // MultiPortRamCtrl.vhd, which sizes the round-robin arbiter and every
+    // per-port array.
+    localparam RAMPORTCOUNT = 4;
+    localparam RAMPORT_QSPI = 0;
+    localparam RAMPORT_FBRD = 1;
+    localparam RAMPORT_FBWR = 2;
+    localparam RAMPORT_FBRDOSD = 3;
     
     typedef logic tRAMIn_request     [RAMPORTCOUNT];
     typedef logic tRAMIn_RnW         [RAMPORTCOUNT];
@@ -62,11 +61,6 @@ module mem_system_top #(parameter ISSIMU=0)
     tRAMOut_done        RAMOut_done; 
     tRAMOut_dout_valid  RAMOut_dout_valid; 
    
-    wire BIST_req_read;
-    wire BIST_req_write;
-    assign RAMIn_request[RAMPORT_BIST] = BIST_req_read | BIST_req_write;
-    assign RAMIn_RnW[RAMPORT_BIST]     = BIST_req_read;
-    
     assign RAMIn_RnW[RAMPORT_QSPI]          = 1'b0;
     assign RAMIn_burst_length[RAMPORT_QSPI] = 11'd1024;
     
@@ -83,6 +77,25 @@ module mem_system_top #(parameter ISSIMU=0)
 
     wire RAM_ready;
     wire [15:0] RAM_dout;    
+
+    // BIST_finished used to gate every consumer's xRamReady, and it was STICKY:
+    // once the test passed it stayed high forever. RAM_ready is not a
+    // substitute - PSRAMController drives it as
+    //     ready <= '1' when (state = IDLE and cfg_1_VendorID = x"0D")
+    // i.e. "can accept a command right now", so it drops on every transaction.
+    // The consumers sample xRamReady on a single cycle:
+    //     if (xEndOfLine || xStartOfFrame) xGbReqRead <= xRamReady;
+    // so any line whose edge lands while the controller is busy serving another
+    // port silently loses its fetch. That breaks the OSD.
+    //
+    // Latch the first assertion instead. RAM_ready also requires the PSRAM to
+    // have been identified (VendorID 0x0D), so this means "PSRAM configured and
+    // up", which is what BIST_finished actually stood for - the pass/fail result
+    // was never consumed by anything.
+    reg RAM_init_done;
+    always @(posedge xClk or posedge reset)
+        if (reset)          RAM_init_done <= 1'b0;
+        else if (RAM_ready) RAM_init_done <= 1'b1;
     
     MultiPortRamCtrl #(ISSIMU)
     iMultiPortRamCtrl
@@ -110,30 +123,6 @@ module mem_system_top #(parameter ISSIMU=0)
        .psram_dq           (PS_DQ)
     );
     
-    PSRAMBIST_Burst #(
-        .BIST_BURSTLENGTH(512), 
-        .SHORTTEST(1)
-        )
-    iPSRAMBIST_Burst
-    (
-       .clk                  (xClk),  
-       .rst                  (reset),
-                                    
-       .test_finished        (BIST_finished),   
-       .test_failed          (BIST_failed),
-                                    
-       .ram_req_read         (BIST_req_read),
-       .ram_req_write        (BIST_req_write),
-       .ram_addr             (RAMIn_addr[RAMPORT_BIST]),    
-       .ram_din              (RAMIn_din[RAMPORT_BIST]),
-       .burst_length         (RAMIn_burst_length[RAMPORT_BIST]),
-       .ram_ready            (RAM_ready),
-       .ram_writeNext        (RAMOut_writeNext[RAMPORT_BIST]),
-       .ram_done             (RAMOut_done[RAMPORT_BIST]),
-       .ram_dout             (RAM_dout),
-       .ram_dout_valid       (RAMOut_dout_valid[RAMPORT_BIST])
-    );  
-
     wire [15:0] qData;
     wire [31:0] qAddress;
     wire qDataValid;
@@ -162,7 +151,7 @@ module mem_system_top #(parameter ISSIMU=0)
         .xClk(xClk),
         // Standard FIFO uses xRegWrite here (not FWFT FIFO)
         .xRdEn(RAMOut_writeNext[RAMPORT_QSPI]),
-        .xRamReady(BIST_finished),
+        .xRamReady(RAM_init_done),
         .xMcuReqWrite(RAMIn_request[RAMPORT_QSPI]),
         .xDout(RAMIn_din[RAMPORT_QSPI]),
         .xAddress(RAMIn_addr[RAMPORT_QSPI])
@@ -177,7 +166,7 @@ module mem_system_top #(parameter ISSIMU=0)
         .hValid(hValid),
         .xClk(xClk),
         
-        .xRamReady(BIST_finished),
+        .xRamReady(RAM_init_done),
         .xStreamValid(RAMOut_dout_valid[RAMPORT_FBRD]),
         .xStreamData(RAM_dout),
         .xWrBurstDone(RAMOut_done[RAMPORT_FBRD]),
@@ -206,7 +195,7 @@ module mem_system_top #(parameter ISSIMU=0)
         .hValid(hValid_r1),
         .xClk(xClk),
                 
-        .xRamReady(BIST_finished),
+        .xRamReady(RAM_init_done),
         .xStreamValid(RAMOut_dout_valid[RAMPORT_FBRDOSD]),
         .xStreamData(RAM_dout),
         .xWrBurstDone(RAMOut_done[RAMPORT_FBRDOSD]),
@@ -227,7 +216,7 @@ module mem_system_top #(parameter ISSIMU=0)
 
         .xClk(xClk),
         .xRdEn(RAMOut_writeNext[RAMPORT_FBWR]),
-        .xRamReady(BIST_finished),
+        .xRamReady(RAM_init_done),
         .xMcuReqWrite(RAMIn_request[RAMPORT_FBWR]),
         .xDout(RAMIn_din[RAMPORT_FBWR]),
         .xAddress(RAMIn_addr[RAMPORT_FBWR])

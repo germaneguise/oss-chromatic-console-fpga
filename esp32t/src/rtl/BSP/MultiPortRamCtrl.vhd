@@ -8,7 +8,10 @@ use IEEE.numeric_std.all;
 
 package pMultiPortPSRAM is
 
-   constant RAMPORTCOUNT : integer := 5;
+   -- Was 5. Port 0 was the PSRAM BIST; it is gone, so the round-robin
+   -- arbiter and every per-port array shrink by one. Must stay in lockstep
+   -- with RAMPORTCOUNT in mem_system_top.sv.
+   constant RAMPORTCOUNT : integer := 4;
 
    type tRAMIn_request         is array(0 to RAMPORTCOUNT - 1) of std_logic;
    type tRAMIn_RnW             is array(0 to RAMPORTCOUNT - 1) of std_logic;
