@@ -11,6 +11,17 @@
 //                     
 //----------------------------------------------------------------------
 //===========================================
+// Every endpoint clock is tied to pClk in usbuvcuart_top, so the
+// clk_cross_fifo in usb_tx_buf/usb_rx_buf crosses a clock to itself. Gowin
+// infers no BSRAM for a 64x8, so each costs ~576 registers of pure fabric
+// while all the BSRAM lives in the sync_*_pkt_fifos.
+//
+// TX drops its FIFO entirely (see usb_tx_buf). RX keeps one - measured on
+// hardware, removing it loses every second byte - but swaps to a single-clock
+// 8-deep version. Comment this out to restore the vendor dual-clock IP, which
+// you need if an endpoint is ever clocked separately from i_clk.
+`define    USB_FIFO_SINGLE_CLOCK
+
 `define    EP3_IN_EN
 `define    EP3_OUT_EN
 `define     EP1_IN_BUF_ASIZE     4'd12
@@ -1284,6 +1295,7 @@ module usb_tx_buf #(
     reg                c_fifo_rd;
     reg                c_fifo_rd_dval;
     wire [P_DSIZE-1:0] c_fifo_rd_data;
+`ifndef USB_FIFO_SINGLE_CLOCK
     assign c_fifo_wr      = i_ep_tx_dval;
     assign c_fifo_wr_data = i_ep_tx_data;
     clk_cross_fifo #(
@@ -1333,8 +1345,14 @@ module usb_tx_buf #(
 
 //==============================================================
 //======usb packet crc check fifo
-assign pkt_fifo_wr        = c_fifo_rd_dval;
-assign pkt_fifo_wr_data   = c_fifo_rd_data;
+`else
+// The TX cross FIFO was a pure pipe - drained unconditionally into the packet
+// FIFO, whose full port is not even connected - so the endpoint stream can be
+// written straight in. RX is NOT like this: there the FIFO's holding Q sits
+// between the pop and a consumer that stalls, so it keeps a (smaller) FIFO.
+assign pkt_fifo_wr        = i_ep_tx_dval;
+assign pkt_fifo_wr_data   = i_ep_tx_data;
+`endif
 assign pkt_fifo_rd_pktfin = i_usb_txpktfin&(i_usb_endpt==P_ENDPOINT);
 assign pkt_fifo_rd_act    = i_usb_txact&(i_usb_endpt==P_ENDPOINT);
 assign pkt_fifo_rd        = i_usb_txpop&(i_usb_endpt==P_ENDPOINT);
@@ -1466,11 +1484,15 @@ module usb_rx_buf #(
 //======cross fifo
 assign c_fifo_wr      = pkt_fifo_rd_dval;
 assign c_fifo_wr_data = pkt_fifo_rd_data;
-    clk_cross_fifo #(
+    // Same interface and the same registered, holding Q as clk_cross_fifo,
+    // but one clock: no gray pointers, no synchronisers, no dual port. Depth
+    // drops 64 -> 8; AFULL keeps its half-depth relationship. At 115200 baud
+    // the UART drains a byte every ~2900 pClk cycles, so 8 is ample.
+    sync_cross_fifo #(
        .DSIZE (8  )
-      ,.ASIZE (6  )
+      ,.ASIZE (3  )
       ,.AEMPT (1  )
-      ,.AFULL (32 )
+      ,.AFULL (4  )
     )clk_cross_fifo
     (
          .WrClock    (i_clk         )
@@ -1699,5 +1721,75 @@ module clk_cross_fifo (
             gry2bin[i]=gry2bin[i+1]^gry_code[i];
         end
       endfunction
+
+endmodule
+
+// Single-clock replacement for clk_cross_fifo. Identical port list and
+// identical Q semantics - registered on read, and HOLDING between reads, which
+// is what usb_rx_buf's handshake depends on: it pops when the packet FIFO has
+// data and presents when the consumer is ready, and Q is what bridges the two.
+//
+// WrClock and RdClock are the same net here; WrClock is used throughout.
+// Everything the dual-clock version needed to cross domains - binary/gray
+// conversion, two-stage pointer synchronisers, dual-port memory - is gone.
+module sync_cross_fifo (
+      Q, Full, Empty, AlmostEmpty, AlmostFull,
+      Data, WrEn, WrClock, Reset, RdEn, RdClock, RPReset
+      );
+      parameter             DSIZE = 8;
+      parameter             ASIZE = 3;
+      parameter             AEMPT = 1;
+      parameter             AFULL = 4;
+
+      output  [DSIZE-1:0]   Q;
+      output                Full;
+      output                Empty;
+      output                AlmostEmpty;
+      output                AlmostFull;
+      input   [DSIZE-1:0]   Data;
+      input                 WrEn;
+      input                 WrClock;
+      input                 Reset;
+      input                 RdEn;
+      input                 RdClock;   // tied to WrClock by construction
+      input                 RPReset;
+
+      reg     [DSIZE-1:0]   Q;
+      reg       [ASIZE:0]   wptr;
+      reg       [ASIZE:0]   rptr;
+      reg     [DSIZE-1:0]   mem[0:(1<<ASIZE)-1];
+
+      wire      [ASIZE:0]   cnt = wptr - rptr;
+
+      assign Empty       = (wptr == rptr);
+      assign Full        = (cnt == (1<<ASIZE));
+      assign AlmostEmpty = (cnt <= AEMPT);
+      assign AlmostFull  = (cnt >= AFULL);
+
+      always@(posedge WrClock or posedge Reset)
+      begin
+        if (Reset)
+          wptr <= 0;
+        else if (WrEn && !Full)
+        begin
+          mem[wptr[ASIZE-1:0]] <= Data;
+          wptr <= wptr + 1'b1;
+        end
+      end
+
+      always@(posedge WrClock or posedge Reset)
+      begin
+        if (Reset)
+          rptr <= 0;
+        else if (RdEn && !Empty)
+          rptr <= rptr + 1'b1;
+      end
+
+      // Matches clk_cross_fifo: loaded only when RdEn, held otherwise.
+      always@(posedge WrClock)
+      begin
+        if (RdEn)
+          Q <= mem[rptr[ASIZE-1:0]];
+      end
 
 endmodule
