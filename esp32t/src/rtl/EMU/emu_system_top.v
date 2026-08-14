@@ -404,7 +404,11 @@ module emu_system_top
         .rewind_active(1'd0)
     );
     
-    audio_filter u_audio_filter
+    // Was audio_filter. The IIR low-pass is gone and DC blocking moved into the
+    // TLV320DAC3100; what remains is the 65536 Hz resample, which is load-
+    // bearing because aud_system_top captures left/right in the asynchronous
+    // gClk domain. See audio_resample.v.
+    audio_resample u_audio_resample
     (
        .reset    (~reset_n),
        .clk      (hclk),

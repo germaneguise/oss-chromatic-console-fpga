@@ -20,8 +20,18 @@ module tlv320_init#(
     
 );
 
-    localparam numregs = 64; 
-    localparam numregsactual = 64; 
+    // Entry count of tlv320regs.hex. The codec runs stock: DC blocking is done
+    // in fabric by audio_resample, not here. It has to be, because top.v fans
+    // left/right out to both the codec AND the UAC endpoint, and the codec only
+    // sits on the first of those - see the note in audio_resample.v.
+    localparam numregs = 64;
+
+    // LAST INDEX, not the count. The loop below advances while
+    // regindex < numregsactual, so it writes entries 0..numregsactual
+    // inclusive. Setting this to the COUNT - as it was, 64 on a 64-entry array
+    // - makes the final pass read tlv320regs[64], one past the end, and issue
+    // a 65th I2C write of undefined data to whatever register that decodes to.
+    localparam numregsactual = numregs - 1;
     reg [15:0] tlv320regs [numregs-1:0] /* synthesis syn_romstyle = "distributed_rom" */;
     initial
     begin
