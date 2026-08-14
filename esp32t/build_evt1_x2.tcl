@@ -14,7 +14,6 @@ set_option -bit_format bin
 set_option -bg_programming jtag_sspi_qsspi
 set_option -output_base_name evt1_x2_v07
 set_option -use_mspi_as_gpio 1
-add_file -type verilog  "src/board/evt1_x2/header.vh"
 add_file -type cst      "src/board/evt1_x2/evt1_x2.cst"
 add_file -type sdc      "src/board/evt1_x2/evt1_x2.sdc"
 #add_file -type gao      "src/psram.rao"
