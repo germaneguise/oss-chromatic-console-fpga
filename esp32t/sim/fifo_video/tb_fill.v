@@ -25,7 +25,9 @@ module tb_fill;
             if (Rnum>peak) peak=Rnum;
             if (i%1000==0)
               $display("  i=%5d wrote=%5d cdc_wr=%4d cdc_rd=%4d deep_wr=%5d Rnum=%5d cdcFull=%0d deepFull=%0d",
-                       i, wrote, dut.u_cdc.wbin, dut.u_cdc.rbin, dut.u_deep.wptr,
+                       // u_cdc now sits inside the gen_cdc generate block; it
+                       // is absent entirely when SINGLE_CLOCK bypasses it.
+                       i, wrote, dut.gen_cdc.u_cdc.wbin, dut.gen_cdc.u_cdc.rbin, dut.u_deep.wptr,
                        Rnum, dut.cdc_full, dut.sync_full);
         end
         @(negedge WrClk); WrEn=0; repeat(50) @(posedge RdClk);

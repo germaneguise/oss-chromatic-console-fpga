@@ -131,7 +131,10 @@ module tb_system;
         if (WrEn && !dut.cdc_full) cdc_in   <= cdc_in   + 1;
     end
     always @(posedge RdClk) if (!dut.rrst) begin
-        if (dut.cdc_rd)      deep_in <= deep_in + 1;
+        // deep_wren rather than the old cdc_rd: it is the deep FIFO's write
+        // enable in both configurations, whereas cdc_rd now lives inside the
+        // gen_cdc generate block and does not exist when SINGLE_CLOCK bypasses it.
+        if (dut.deep_wren)   deep_in <= deep_in + 1;
         if (RdEn && !Empty)  popped  <= popped  + 1;
     end
     always @(posedge RdClk) if (pImage_eof_d)
