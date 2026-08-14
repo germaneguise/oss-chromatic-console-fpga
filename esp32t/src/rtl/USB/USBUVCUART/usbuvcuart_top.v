@@ -839,7 +839,9 @@ module usbuvcuart_top(
 
     wire Empty;
     wire Full;
-    fifo_video uvc_fifo(
+    // fifo_video (Gowin encrypted IP) replaced by our RTL: CDC first,
+    // then deep synchronous buffering in pClk. See fifo_video_rtl.v.
+    fifo_video_rtl uvc_fifo(
             .Data(fram_d), //input [7:0] Data
             .Reset(RESET_IN | h_sof), //input Reset
             .WrClk(hClk), //input WrClk
@@ -852,7 +854,8 @@ module usbuvcuart_top(
             .AlmostFullTh(PACKET_SIZE - HEADER_SIZE), //input [11:0] AlmostFullTh
             .Q(pRam_q), //output [7:0] Q
             .Empty(Empty), //output Empty
-            .Full(Full) //output Full
+            .Full(Full), //output Full
+            .DbgCdcCount()
             );
 
     /* Pull FrameValid to pClk */
@@ -932,8 +935,22 @@ module usbuvcuart_top(
         end
     end
 
+    // The FIFO's Rnum counts only what has reached the read-side memory; bytes
+    // still crossing the write-to-read clock boundary are not visible yet. The
+    // terminating packet's length is Rnum + HEADER_SIZE, so sampling it at eof
+    // truncates the frame tail by up to the crossing depth. Waiting 32 pClk
+    // covers the 16-deep crossing plus its two-flop pointer synchroniser, and
+    // costs 6 flops in a domain with slack - cheaper than an adder on Rnum,
+    // which feeds the Almost_Full compare the packet FSM samples every SOF.
+    // There is over a millisecond of vblank after eof, so the delay is free.
+    reg [5:0] pEofDly = 6'd33;
+    always @(posedge pClk)
+        if (pImage_eof)            pEofDly <= 6'd0;
+        else if (pEofDly != 6'd33) pEofDly <= pEofDly + 1'b1;
+    wire pImage_eof_d = (pEofDly == 6'd32);
+
     always @(posedge pClk) begin
-        if (pImage_eof)
+        if (pImage_eof_d)
             pLastPacket <= 1'd1;
         else if (!usb_sof && pLastReadActive) begin
             pLastPacket <= 1'd0;
