@@ -387,9 +387,15 @@ module system_monitor(
         BTN_START
     };
 
+    /* The debug bit is set because this is NOT a ModRetro build. Leaving it
+       clear makes a modified unit report a version indistinguishable from
+       official v18.8, so the Update Tool, any support conversation and the
+       owner's own recollection all describe RTL that is not what is running.
+       Major/minor stay at 18.8 to record what this was derived from; the debug
+       bit is what says "derived". */
     reg [13:0] version = {
         1'd0,  // 1 bit reserved
-        1'd0,  // 1 bit debug,
+        1'd1,  // 1 bit debug - modified build, not an official release
         6'd8,  // 6 bits minor version
         6'd18  // 6 bits major version
     };
