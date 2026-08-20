@@ -51,4 +51,21 @@ add_file -type verilog "src/rtl/USB/USBUVCUART/sync_fifo/sync_tx_pkt_fifo.v"
 
 add_file -type verilog "src/gowin_pll_preevt/gowin_pll.v"
 add_file -type verilog "src/top.v"
+
+# Stamp the bitstream USERCODE (32 bits) with the short hash of the source
+# commit - exactly 8 hex digits - so a bitstream file or flash dump can be
+# traced back to the source that built it. Left at the project default when
+# git is unavailable (e.g. building from a release tarball).
+set repo_dir [file dirname [info script]]
+if {[catch {exec git -C $repo_dir rev-parse --short=8 HEAD} commit]} {
+    puts "WARNING: git commit unavailable, USERCODE left at default"
+} else {
+    set commit [string range [string trim $commit] 0 7]
+    if {![catch {exec git -C $repo_dir status --porcelain} dirty] && $dirty ne ""} {
+        puts "WARNING: working tree is dirty, USERCODE $commit does not identify this bitstream exactly"
+    }
+    set_option -user_code $commit
+    puts "USERCODE set to commit $commit"
+}
+
 run all
