@@ -42,50 +42,47 @@ module UART
     reg  [3:0] uart_cts_shreg     ;
     reg        uart_cts_debounced ;
     wire       uart_tx_busy       ;
-    // The far end of this UART is the ESP32, fixed at 115200 8N1 - see
-    // chromatic_mcu main.c app_main(). MRUpdater flashes the MCU over this same
-    // link and also stays at 115200: its flashing_tool modules define
-    // MCU_BAUD_RATE / initial_baud and never call esptool's change_baud, and
-    // 115200 is the only baud constant anywhere in that bundle. So the divisor
-    // is a constant, and Fixed_Point_Divider_Top was spending
-    // 126 REG / 69 ALU / 122 LUT recomputing it forever from a value that never
-    // changes.
-    //
-    // Fixed_Point_Divider_Top is NOT an integer divider: it returns the quotient
-    // with 3 fractional bits, so div_out = (dividend * 8) / divisor. uart_tx.vhd
-    // counts tx_ticks up to divider_value per bit, i.e. divider_value is
-    // clocks-per-bit, which pins the scaling down - at CLK_FREQ 60 MHz (pClk is
-    // PHY_CLKOUT, not the 33.55 MHz pclk) that has to be 60e6/115200 = 520.83.
-    //
-    //   div_out       = (CLK_FREQ*4 * 8) / BAUD = CLK_FREQ*32 / BAUD = 16666
-    //   divider_value = div_out[28:5] = 520
-    //   div_correct   = div_out[4:3]  = 3      (3/4 = 0.75, vs true frac 0.83)
-    //
-    // Reading it as a plain integer divide gives divider_value 65 - 8x too fast -
-    // and the link returns framing garbage (0xC0 repeating). Measured.
-    //
-    // The BAUD_RATE port stays but is unused. The CDC SET_LINE_CODING path
-    // still accepts and acknowledges rate changes, it just no longer retunes the
-    // UART. Windows usbser.sys issues SET_LINE_CODING on every port open
-    // regardless of the ACM bmCapabilities bit, and STALLing it would fail the
-    // open - and with it esptool, and with it firmware updates.
-    localparam [31:0] FIXED_BAUD = 32'd115200;
-    localparam [31:0] DIV_OUT_C  = ({CLK_FREQ, 5'b00000}) / FIXED_BAUD;
+    reg  [1:0] div_correct;
 
-    wire  [1:0] div_correct   = DIV_OUT_C[4:3];
-    wire [23:0] divider_value = DIV_OUT_C[28:5];
+    reg [23:0] divider_value;
     // -------------------------------------------------------------------------
     // UART DIVIDER VALUE
     // -------------------------------------------------------------------------
-    //always @(posedge CLK or posedge RST) begin
-    //    if (RST) begin
-    //        divider_value <= 24'd0;
-    //    end
-    //    else begin
-    //        //divider_value <= CLK_FREQ/(15*BAUD_RATE);
-    //        divider_value <= CLK_FREQ/(BAUD_RATE);
-    //    end
-    //end
+    // The far end of this UART is the ESP32's console. The stock MCU firmware
+    // and every existing flashing tool (MRUpdater's flashing_tool, esptool)
+    // run it at 115200 8N1; a console firmware configured for 921600 is
+    // reached by opening the port at that rate. Exactly these two rates are
+    // supported, selected by the host's CDC SET_LINE_CODING. Any other
+    // requested rate falls back to 115200 so 115200-only tools keep working
+    // even when a host opens the port with a stale line coding (Windows
+    // usbser.sys issues SET_LINE_CODING on every open). GET_LINE_CODING still
+    // answers with whatever the host requested, even after a fallback.
+    //
+    // Divider constants are precomputed at elaboration, replacing the runtime
+    // Fixed_Point_Divider IP. That divider was NOT an integer divider: it
+    // returned the quotient with 3 fractional bits and its dividend was
+    // CLK_FREQ*4, so DIV_OUT = (CLK_FREQ * 32) / BAUD, where
+    //   [28:5] = floor(CLK_FREQ / BAUD)  clocks per bit (520 @ 115200, 65 @ 921600)
+    //   [4:3]  = quarter-bit correction  (3 @ 115200, 0 @ 921600)
+    // CLK_FREQ is 60 MHz here: usbuvcuart_top's pClk is PHY_CLKOUT, not the
+    // 33.55 MHz pclk. Reading DIV_OUT as a plain integer divide runs the link
+    // 8x fast and returns framing garbage - measured as 0xC0 repeating.
+    localparam [31:0] DIV_OUT_115200 = ({CLK_FREQ, 5'b00000}) / 32'd115200;
+    localparam [31:0] DIV_OUT_921600 = ({CLK_FREQ, 5'b00000}) / 32'd921600;
+
+    always @(posedge CLK or posedge RST) begin
+        if (RST) begin
+            divider_value <= DIV_OUT_115200[28:5];
+            div_correct   <= DIV_OUT_115200[4:3];
+        end
+        else begin
+            case (BAUD_RATE)
+                32'd921600 : begin divider_value <= DIV_OUT_921600[28:5]; div_correct <= DIV_OUT_921600[4:3]; end
+                // 115200, and any unsupported rate, falls back to 115200
+                default    : begin divider_value <= DIV_OUT_115200[28:5]; div_correct <= DIV_OUT_115200[4:3]; end
+            endcase
+        end
+    end
     // -------------------------------------------------------------------------
     // UART RXD DEBAUNCER
     // -------------------------------------------------------------------------
@@ -166,10 +163,4 @@ module UART
     );
 
 
-
-    // Fixed_Point_Divider_Top instance removed - divider_value and div_correct
-    // are now the localparams above. See the note at their declaration.
-    
-
- 
 endmodule
