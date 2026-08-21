@@ -618,6 +618,7 @@ module top #(parameter ISSIMU=0)
             else
                 usbrst <= 1'd0;
 
+    wire usb_sof_div;
     usbuvcuart_top u_usb_top(
         .CLK_24MHz(CLK_24MHz),
         .ERST(usbrst),
@@ -638,6 +639,7 @@ module top #(parameter ISSIMU=0)
         .hFrameValid(vr1),
         .hData(d1),
         .debugs(debugs),
+        .sof_div_o(usb_sof_div),
         .playerNum({4'd0, system_control[7:4]}),
         .usb_dxp_io(usb_dxp_io),
         .usb_dxn_io(usb_dxn_io),
@@ -716,6 +718,7 @@ module top #(parameter ISSIMU=0)
         .BTN_SEL(BTN_SEL_filtered),
         .BTN_START(BTN_START_filtered),
         .menuDisabled(menuDisabled),
+        .usb_sof_div(usb_sof_div),
         .LCD_BACKLIGHT_INIT(LCD_BACKLIGHT_INIT),
         .LCD_INIT_DONE(LCD_INIT_DONE & ~boot_rom_enabled),
         .LCD_PWM(LCD_PWM),

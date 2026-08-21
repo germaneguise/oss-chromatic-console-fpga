@@ -39,6 +39,7 @@ module usbuvcuart_top(
     input [15:0]        right,
 
     output  [7:0]       debugs,
+    output              sof_div_o  , // divided USB SOF, see system_monitor
     inout               usb_dxp_io,
     inout               usb_dxn_io,
     input               usb_rxdp_i,
@@ -1116,6 +1117,10 @@ module usbuvcuart_top(
         end
     end
     assign sof_rise = (sof_d0)&(~sof_d1);
+
+    // Only a host emits SOF, and it stops on unplug or suspend. sofCounts is
+    // already divided by 8, so bit 2 flips every 4 ms (HS) / 32 ms (FS).
+    assign sof_div_o = sofCounts[2];
 
     reg [10:0] sofCounts_reg;
     reg [3:0] sof_1ms;

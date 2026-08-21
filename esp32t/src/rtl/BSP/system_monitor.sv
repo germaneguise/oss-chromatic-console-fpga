@@ -12,6 +12,7 @@ module system_monitor(
     input               BTN_MENU, // pressed = 0
     input               BTN_SEL,
     input               BTN_START,
+    input               usb_sof_div,
     // Controls external mux into ADC
     output  reg         menuDisabled,
     output  reg         ADC_SEL,
@@ -393,6 +394,20 @@ module system_monitor(
         6'd18  // 6 bits major version
     };
 
+    // usb_sof_div transitions while a USB host is present. One Buttons message
+    // per transition pets the MCU's idle timer, whose only other wake source is
+    // this UART - without it the console dies 100 ms after we go quiet.
+    reg sof_div_s0, sof_div_s1, sof_div_s2;
+    always @(posedge clk) begin
+        sof_div_s0 <= usb_sof_div;   // synchronise, then edge-detect
+        sof_div_s1 <= sof_div_s0;
+        sof_div_s2 <= sof_div_s1;
+    end
+
+    // Pulse, not level: the arbiter holds the request while the valid is high,
+    // so a level would stream continuously.
+    wire sof_tick = sof_div_s1 ^ sof_div_s2;
+
     localparam  NUM_CH = 10;
     wire [$clog2(NUM_CH)-1:0] tx_channel;
 
@@ -405,7 +420,7 @@ module system_monitor(
         ~menuDisabled,                                // pmic sys status
         ~menuDisabled,                                // System Control
         ~menuDisabled | updateBrightness,             // Audio + Brightness
-        ~menuDisabled | request_buttons,              // Buttons
+        ~menuDisabled | request_buttons | sof_tick,    // Buttons
         (~menuDisabled & transmitVolt & bat_is_LI),   // Lithium
         (~menuDisabled & transmitVolt & ~bat_is_LI)   // AA
     };
