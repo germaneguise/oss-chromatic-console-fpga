@@ -52,10 +52,10 @@ module top #(parameter ISSIMU=0)
     output              ESP32_MCU_D11,  // D11 IO10 CC
     input               QSPI_CS,        // CS D10 IO5 CC
     input               QSPI_CLK,       // CLK D9 IO18 CC
-    input               QSPI_MOSI,      // D D8 IO23
-    input               QSPI_MISO,      // Q D7 IO19
-    input               QSPI_WP,        // WP D6 IO22
-    input               QSPI_HD,        // HD D5 IO21 CC
+    inout               QSPI_MOSI,      // D D8 IO23 - flash bridge drives it back during quad-read data
+    inout               QSPI_MISO,      // Q D7 IO19 - flash bridge drives flash MISO back on it
+    inout               QSPI_WP,        // WP D6 IO22 - flash bridge data lane during quad-read data
+    inout               QSPI_HD,        // HD D5 IO21 CC - flash bridge data lane during quad-read data
     output  reg         ESP32_MCU_D4,   // RXD
     input               ESP32_MCU_D3,   // TXD
 
@@ -108,6 +108,13 @@ module top #(parameter ISSIMU=0)
     output              usb_pullup_en_o,
     inout               usb_term_dp_io,
     inout               usb_term_dn_io,
+
+    output              FLASH_MCLK,
+    output              FLASH_MCSN,
+    inout               FLASH_MOSI,     // flash IO0: flash drives it during quad-read data
+    input               FLASH_MISO,     // flash IO1
+    input               FLASH_MD2,      // flash IO2 (WP_n function disabled: QE=1 from factory)
+    input               FLASH_MD3,      // flash IO3 (HOLD_n function disabled: QE=1 from factory)
 
     input               VBAT_ADC_P,
     input               VBAT_ADC_N
@@ -662,6 +669,39 @@ module top #(parameter ISSIMU=0)
     wire        uart_rx_val;
 
     wire menu_gated = qMenuInit&(CART_DET_sr[6:3]==4'b1111) ? BTN_MENU_ored : 1'b1;
+
+    // ESP32-mastered access to the config flash. The MCU shares the display
+    // link's QSPI pins and selects the flash bridge with its own chip select
+    // on I2S_WS (D15, ESP32 IO25) - an otherwise unused pin, pulled up in
+    // the cst so the bridge is inert while the ESP32 boots with floating
+    // pins. QSPI_Slave never sees these transactions because its own CS
+    // stays high, and the bridge is gated on the display CS being idle so a
+    // misconfigured master cannot address both slaves at once.
+    //
+    // flash_bridge passes 1-bit commands transparently and additionally
+    // decodes quad-output fast read (0x6B), reversing all four data lanes
+    // for its data phase. CLK and CS_n stay plain drives (the fabric never
+    // coexists with another bus master: JTAG SPI programming erases the
+    // SRAM configuration first); the IO lanes are tri-stated per phase
+    // because the flash itself drives them during quad-read data. WP_n and
+    // HOLD_n functions are disabled in this flash (QE=1 from the factory),
+    // so FLASH_MD2/MD3 are pure data lanes with cst pull-ups for the
+    // fabric-absent states.
+    flash_bridge u_flash_bridge(
+        .cs2_n(I2S_WS),
+        .disp_cs_n(QSPI_CS),
+        .sclk(QSPI_CLK),
+        .host_io0(QSPI_MOSI),
+        .host_io1(QSPI_MISO),
+        .host_io2(QSPI_WP),
+        .host_io3(QSPI_HD),
+        .flash_clk(FLASH_MCLK),
+        .flash_cs_n(FLASH_MCSN),
+        .flash_io0(FLASH_MOSI),
+        .flash_io1(FLASH_MISO),
+        .flash_io2(FLASH_MD2),
+        .flash_io3(FLASH_MD3)
+    );
 
     system_monitor u_system_monitor(
         .clk(gClk),

@@ -52,12 +52,22 @@ IO_LOC "CLK_FPGA" M2;
 IO_LOC "ESP32_EN" J3; //ff3
 IO_LOC "ESP32_IO0" E1; //ff3
 
-//IO_LOC "FLASH_MCLK" H1;
-//IO_LOC "FLASH_MCSN" D2;
-//IO_LOC "FLASH_MD2" E8;
-//IO_LOC "FLASH_MD3" F8;
-//IO_LOC "FLASH_MISO" H2;
-//IO_LOC "FLASH_MOSI" C1;
+IO_LOC "FLASH_MCLK" H1;
+IO_LOC "FLASH_MCSN" D2;
+IO_LOC "FLASH_MD2" E8;
+IO_LOC "FLASH_MD3" F8;
+IO_LOC "FLASH_MISO" H2;
+IO_LOC "FLASH_MOSI" C1;
+// Pulls keep the flash deselected and un-held in the fabric-absent states -
+// before configuration, and after the SRAM erase that JTAG flash programming
+// performs (CS_n/WP_n/HOLD_n high, clock parked low). Once configured, the
+// fabric drives these pins outright.
+IO_PORT "FLASH_MCLK" IO_TYPE=LVCMOS33 PULL_MODE=DOWN;
+IO_PORT "FLASH_MCSN" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_PORT "FLASH_MD2"  IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_PORT "FLASH_MD3"  IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_PORT "FLASH_MISO" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_PORT "FLASH_MOSI" IO_TYPE=LVCMOS33 PULL_MODE=NONE;
 //IO_LOC "FPGA_DONE" H14;
 IO_LOC "FPGA_LED_B" B6;
 IO_LOC "FPGA_LED_EN" B5;
@@ -110,7 +120,8 @@ IO_LOC "LINK_OUT" P6;
 IO_LOC "LINK_SD" R7;
 
 IO_LOC "I2S_BCLK" G1; // D16 IO33
-IO_LOC "I2S_WS" G2; // D15 IO25
+IO_LOC "I2S_WS" G2; // D15 IO25 - flash bridge CS2; pulled up so the bridge idles while the ESP32 boots with floating pins
+IO_PORT "I2S_WS" IO_TYPE=LVCMOS33 PULL_MODE=UP;
 IO_LOC "I2S_DIN" F1; // D14 IO26
 IO_LOC "I2S_DOUT" F2; // D13 IO27
 IO_LOC "ESP32_MCU_D12" F3;//F3; // D12 IO9
