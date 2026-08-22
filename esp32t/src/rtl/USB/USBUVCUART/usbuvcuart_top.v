@@ -1346,6 +1346,22 @@ module ctrl_uart(
     localparam  GET_LINE_CODING = 8'h21;
     localparam  SET_CONTROL_LINE_STATE = 8'h22;
 
+    // DTR/RTS drive the ESP32's EN and IO0 (top.v), and some hosts - Chrome's
+    // Web Serial among them - follow their SET_LINE_CODING with a DTR/RTS
+    // SET_CONTROL_LINE_STATE the application never asked for, which resets or
+    // straps the ESP32 on every open. Escape hatch: a baud rate with bit 0 set
+    // (115201, 921601) arms a one-shot that swallows the NEXT
+    // SET_CONTROL_LINE_STATE and is dropped from the stored rate, so the UART
+    // runs at 115200/921600 and GET_LINE_CODING reports that.
+    // header_ready is a level held for the whole request, so the swallow is
+    // latched for the request's duration (ignoring_ctl) and released when
+    // the header is torn down; the arm itself is consumed on the request's
+    // first cycle. (A single flag spent at teardown would race the next
+    // SETUP: its bRequest lands before its wIndex, so the stale wIndex makes
+    // the teardown test fire early.)
+    reg arm_ignore_ctl;
+    reg ignoring_ctl;
+
     always @(posedge pClk)
         if (RESET_IN) begin
             usb_txval <= 1'd0;
@@ -1354,14 +1370,24 @@ module ctrl_uart(
             s_char1_format <= 8'd0;
             s_parity1_type <= 8'd0;
             s_data1_bits <= 8'd8;
+            arm_ignore_ctl <= 1'b0;
+            ignoring_ctl <= 1'b0;
         end else if ((header_ready) && (wIndex == {8'd0, `UART_CTRL_IFACE})) begin
             if (bmRequestType == 8'h21) begin /* Set requests */
                 if ((bRequest == SET_CONTROL_LINE_STATE) && (wLength == 0)) begin
-                    s_ctl_sig[1:0] <= wValue[1:0];
+                    if (arm_ignore_ctl || ignoring_ctl) begin
+                        ignoring_ctl <= 1'b1;
+                        arm_ignore_ctl <= 1'b0;
+                    end else begin
+                        s_ctl_sig[1:0] <= wValue[1:0];
+                    end
                 end else if (usb_rxact && (bRequest == SET_LINE_CODING)
                             && (wLength == 7)) begin
                     case (cdata_ofs)
-                    16'd0: s_dte1_rate[7:0] <= usb_rxdat;
+                    16'd0: begin
+                        s_dte1_rate[7:0] <= {usb_rxdat[7:1], 1'b0}; /* bit 0 is the arm flag, not rate */
+                        arm_ignore_ctl <= usb_rxdat[0];
+                    end
                     16'd1: s_dte1_rate[15:8] <= usb_rxdat;
                     16'd2: s_dte1_rate[23:16] <= usb_rxdat;
                     16'd3: s_dte1_rate[31:24] <= usb_rxdat;
@@ -1393,6 +1419,8 @@ module ctrl_uart(
                     end
                 end
             end
+        end else begin
+            ignoring_ctl <= 1'b0; /* header torn down: the swallowed request is over */
         end
 endmodule
 
