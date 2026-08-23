@@ -29,7 +29,7 @@ module top #(parameter ISSIMU=0)
     output              CART_DATA_DIR_E,
 
     input               CART_DET,
-    input               CART_AUDIN,
+    inout               CART_AUDIN,
 
     input               CLK_FPGA,       // 33.55432MHz
     input               CLK_27MHz,
@@ -604,7 +604,7 @@ module top #(parameter ISSIMU=0)
         .cart_data_dir_e      (rdr_CART_D_oe),
         .cart_d_out           (rdr_CART_D_o),
         .cart_d_in            (CART_D),
-        .cart_audio           (),
+        .cart_audio           (CART_AUDIN),
         .cart_det             (CART_DET),
         .cart_pullups_enabled (rdr_pullups),
         .session_active       (rdr_session)
