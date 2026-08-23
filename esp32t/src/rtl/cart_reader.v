@@ -229,8 +229,22 @@ reg [7:0]  par [0:8];
 reg [7:0]  par_cnt;      // bytes remaining to collect
 reg [3:0]  par_idx;      // index into par[]
 
-// 16kb buffer for writes, CRC, or other large operations
-reg [7:0]  blob [0:(16 * 1024) - 1];
+// Staging buffer for writes (SRAM restore, flash program). NOT used by reads -
+// P_CART_RD_TX streams straight from the cart to tx_valid and never touches it.
+//
+// Sized against what hosts actually ask for rather than the original 16 KB:
+// FlashGBX's MAX_BUFFER_WRITE is 0x400, so every write chunk it issues is 1 KB.
+// 4 KB keeps 4x headroom and costs 2 BSRAM instead of 8. Gowin BSRAM is 2048
+// bytes in 8-bit mode, so this is exactly 2 blocks with no waste.
+//
+// XFER_SIZE is host-settable to 65535 and indexes this array, with no bounds
+// check anywhere. A host asking for more than it holds wrapped blob_idx and
+// silently programmed corrupted data onto the cartridge - no error, no
+// truncation, just wrong bytes in flash. Clamped in the SET_VARIABLE handler,
+// which is what makes shrinking the buffer safe rather than narrowing the
+// window for that failure.
+localparam [15:0] BLOB_BYTES = 16'd4096;
+reg [7:0]  blob [0:BLOB_BYTES-1];
 reg [15:0] blob_idx;
 
 // Response buffer (used by P_TX_BYTES, P_FW_INFO, P_GET_VAR_TX)
@@ -386,7 +400,22 @@ task do_set_var;
         end
         8'd2: begin
             case (key[7:0])
-            8'h00: var16[VAR16_XFER_SIZE]  <= val[15:0];
+            // Clamped, and it MUST stay clamped, for two independent reasons.
+            //
+            // Writes: this value indexes blob[] with no bounds check, so an
+            // oversized request used to wrap blob_idx and silently program
+            // corrupt data. Saturating also makes the limit discoverable - write
+            // a large value, read it back with GET_VARIABLE(TRANSFER_SIZE).
+            //
+            // Reads: P_CART_RD_TX streams straight from the cart into EP3 with
+            // NO backpressure - cart_reader has no tx_ready input on this
+            // branch. The cart sources bytes at ~3 MB/s and USB drains at ~1
+            // MB/s, so a long enough burst overruns the endpoint FIFO and bytes
+            // are dropped mid-stream. Measured: unclamping this and asking for
+            // 16384 returned 11337 bytes. 4096 is within what the FIFO absorbs.
+            // Raising it needs real flow control, not a bigger number here.
+            8'h00: var16[VAR16_XFER_SIZE]  <= (val[15:0] > BLOB_BYTES) ? BLOB_BYTES
+                                                                      : val[15:0];
             8'h01: var16[VAR16_BUF_SIZE]   <= val[15:0];
             8'h02: var16[VAR16_ROM_BANK]   <= val[15:0];
             8'h03: var16[VAR16_STATUS_REG] <= val[15:0];
