@@ -18,6 +18,17 @@ set_max_delay -from [get_clocks {hclk}] -to  [get_ports {CART_RD}] 14
 set_max_delay -from [get_clocks {hclk}] -to  [get_ports {CART_CS}] 14
 set_max_delay -from [get_clocks {hclk}] -to  [get_ports {LINK_SD}] 14
 set_max_delay -from [get_clocks {hclk}] -to  [get_ports {CART_D[*]}] 14
+// PHI, the direction control, cart reset and the detect input were never
+// constrained. Address and strobes are bounded at 14 ns while the clock the
+// whole cart bus is referenced to floats free, so their RELATIVE skew is
+// undefined and settled by placement. Direct paths hid it; putting a mux in
+// front of these pins is what made the omission bite. CART_DET is sampled on
+// xclk and gates memrst, which holds the core in reset.
+set_max_delay -from [get_clocks {hclk}] -to  [get_ports {CART_CLK}] 14
+set_max_delay -from [get_clocks {hclk}] -to  [get_ports {CART_DATA_DIR_E}] 14
+set_max_delay -from [get_clocks {hclk}] -to  [get_ports {CART_RST}] 14
+set_max_delay -from [get_clocks {hclk}] -to  [get_ports {CART_AUDIN}] 14
+set_max_delay -from [get_ports {CART_DET}] -to [get_clocks {xclk}] 13
 
 create_clock -name ck24 -period 41.666667 -waveform {0 20.833333} [get_ports {CLK_24MHz}]
 
@@ -55,3 +66,28 @@ set_clock_groups -asynchronous -group [get_clocks {PHY_CLKOUT}] -group [get_cloc
 set_clock_groups -asynchronous -group [get_clocks {PHY_CLKOUT}] -group [get_clocks {hclk}]
 set_clock_groups -asynchronous -group [get_clocks {PHY_CLKOUT}] -group [get_clocks {pclk}]
 set_clock_groups -asynchronous -group [get_clocks {PHY_CLKOUT}] -group [get_clocks {xclk}]
+
+// The cart bus is driven from two clocks, but only one was ever constrained.
+// The set_max_delay block above is entirely -from/-to hclk, written when the
+// emulator was the only master. cart_reader runs in PHY_CLKOUT and drives the
+// same pins through the top-level mux, and PHY_CLKOUT is declared asynchronous
+// to hclk, so those paths carry no bound at all - the placer may give address,
+// data and strobes arbitrary relative delay, and that changes build to build.
+// Same argument as the video<->USB crossing above: unconstrained is worse than
+// tight, because nothing in the flow objects.
+//
+// 14 ns to match the hclk side. What matters is not the absolute number - a
+// Game Boy bus cycle is ~954 ns, so nanoseconds are noise against it - but that
+// address, data and strobes share one bound instead of floating independently.
+// CART_DATA_DIR_E, CART_CLK and CART_RST are included because cart_reader
+// drives them too; the hclk block omits them.
+set_max_delay -from [get_ports {CART_D[*]}] -to [get_clocks {PHY_CLKOUT}] 13
+set_max_delay -from [get_clocks {PHY_CLKOUT}] -to [get_ports {CART_A[*]}] 14
+set_max_delay -from [get_clocks {PHY_CLKOUT}] -to [get_ports {CART_D[*]}] 14
+set_max_delay -from [get_clocks {PHY_CLKOUT}] -to [get_ports {CART_DATA_DIR_E}] 14
+set_max_delay -from [get_clocks {PHY_CLKOUT}] -to [get_ports {CART_CS}] 14
+set_max_delay -from [get_clocks {PHY_CLKOUT}] -to [get_ports {CART_RD}] 14
+set_max_delay -from [get_clocks {PHY_CLKOUT}] -to [get_ports {CART_WR}] 14
+set_max_delay -from [get_clocks {PHY_CLKOUT}] -to [get_ports {CART_CLK}] 14
+set_max_delay -from [get_clocks {PHY_CLKOUT}] -to [get_ports {CART_RST}] 14
+set_max_delay -from [get_clocks {PHY_CLKOUT}] -to [get_ports {CART_AUDIN}] 14
