@@ -250,6 +250,13 @@ module top #(parameter ISSIMU=0)
     always@(posedge gClk)
         LCD_VSYNC_r1 <= LCD_VSYNC;
 
+    // Declared up here because the LCD_EN gating below and the LCD_RESET
+    // override both need it; the latch itself lives with the cart-bus mux
+    // further down, where the debounced buttons it samples are in scope.
+    reg        dumper_en      = 1'b0;
+    reg        dumper_latched = 1'b0;
+    reg [23:0] dumper_arm     = 24'd0;
+
     reg memrst = 1'd0;
 
     reg LCD_EN1;
@@ -264,7 +271,7 @@ module top #(parameter ISSIMU=0)
             LCD_EN1 <= 1'd0;
         end else begin
             if(LCD_VSYNC&~LCD_VSYNC_r1) begin
-                LCD_EN0 <= LCD_INIT_DONE & LCD_BACKLIGHT_INIT;
+                LCD_EN0 <= LCD_INIT_DONE & LCD_BACKLIGHT_INIT & ~dumper_en;
                 LCD_EN1 <= LCD_EN0;
                 LCD_EN  <= LCD_EN1;
             end
@@ -279,6 +286,25 @@ module top #(parameter ISSIMU=0)
     wire [17:0] LCD_DB_UVC;
     wire menuDisabled;
     wire slideOutActive;
+    // Panel handling while the dumper owns the cart bus.
+    //
+    // The panel's timing comes from the EMULATOR, not from a free-running
+    // generator: vid_system_top has
+    //     assign hVsync = gb_lcd_vsync;
+    //     assign hHsync = gb_lcd_mode[1];
+    // so parking the core stops both axes no matter what else is running. A
+    // starved ST7785 is what makes the display misbehave, so hold it in reset
+    // (LCD_RST is active low) and drop LCD_EN for the duration. Leaving
+    // vid_system_top itself out of reset still matters - it also owns the
+    // backlight-init logic and the SPI sequencer, and resetting those was a
+    // separate bug - but it cannot substitute for timing it does not generate.
+    //
+    // Exiting dumper mode is a power cycle by design, so the ST7785 gets its
+    // full init sequence again on the way back; there is no resume path to get
+    // wrong here.
+    wire lcd_reset_vid;
+    assign LCD_RESET = dumper_en ? 1'b0 : lcd_reset_vid;
+
     wire hDrawOSD;
     vid_system_top #(ISSIMU)
     u_vid_system_top(
@@ -297,7 +323,7 @@ module top #(parameter ISSIMU=0)
         .LCD_ENABLE(LCD_ENABLE),
         .LCD_HSYNC(LCD_HSYNC),
         .LCD_EN(LCD_EN),
-        .LCD_RESET(LCD_RESET),
+        .LCD_RESET(lcd_reset_vid),
         .LCD_SPI_CSX(LCD_SPI_CSX),
         .LCD_SPI_SCLK(LCD_SPI_SCLK),
         .LCD_SPI_SDA(LCD_SPI_SDA),
@@ -373,8 +399,7 @@ module top #(parameter ISSIMU=0)
         if(~lock_o)
             memrst <= 1'd1;
         else
-            memrst <= CART_DET_sr[17:2] == 16'h7FFF || CART_DET_sr[17:2] == 16'h8000
-                   || dumper_en;
+            memrst <= CART_DET_sr[17:2] == 16'h7FFF || CART_DET_sr[17:2] == 16'h8000;
 
     mem_system_top #(ISSIMU)
     u_mem_system_top
@@ -464,9 +489,6 @@ module top #(parameter ISSIMU=0)
     // README is emphatic that carts must not be swapped under power. Latching
     // also keeps this a real runtime signal - tying it to a constant would let
     // synthesis delete one side of the mux and flatter the resource numbers.
-    reg        dumper_en      = 1'b0;
-    reg        dumper_latched = 1'b0;
-    reg [23:0] dumper_arm     = 24'd0;
     always @(posedge gClk)
         if (!dumper_latched) begin
             if (&dumper_arm) begin
@@ -518,7 +540,14 @@ module top #(parameter ISSIMU=0)
     emu_system_top u_emu_system_top(
         .hclk(hClk),
         .pclk(pClk),
-        .reset_n(~memrst),//lock_o),
+        // Dumper mode parks the CORE only. memrst must not be used for this:
+        // it also resets vid_system_top (panel timing, the SPI init sequencer
+        // and LCD_RESET itself), the LCD_EN/backlight logic and the memory
+        // system. Holding those down is what upsets the panel - it is not
+        // merely starved of pixels, its controller is held in reset. Keeping
+        // them running leaves the display initialised and quietly showing
+        // nothing while the cart bus belongs to cart_reader.
+        .reset_n(~(memrst | dumper_en)),
         .POWER_GOOD(~POWER_ON_FPGA),
 
         .customPaletteEna(paletteBGIn[63]),
