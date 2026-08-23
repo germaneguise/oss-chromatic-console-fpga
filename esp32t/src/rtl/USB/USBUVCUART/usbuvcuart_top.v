@@ -592,6 +592,17 @@ module usbuvcuart_top(
     // ClearCommError under load, while isolated calls pass. The value was the
     // problem, not the mechanism.
     localparam [31:0] DUMPER_MAGIC_BAUD = 32'd1337337;
+    // Bit 0 of the requested rate is consumed as the ignore-next-DTR/RTS arm
+    // flag and cleared before the rate is stored, so the latch has to compare
+    // against what actually lands in s_dte1_rate, not against what the host
+    // asked for. 1337337 is odd, so without this the compare never matches,
+    // ep3_to_dumper stays low and synthesis sweeps the whole cart reader away
+    // as unreachable - which is exactly what it did.
+    //
+    // The pairing is deliberate rather than lucky: a host opening the archival
+    // channel is precisely one that must not reset the ESP32 on the way in, and
+    // an odd magic rate arms that suppression for free.
+    localparam [31:0] DUMPER_MAGIC_STORED = DUMPER_MAGIC_BAUD & ~32'd1;
     localparam [31:0] CONSOLE_BAUD       = 32'd115200;
 
     // LATCHED, not a live compare of the current rate. Hosts close and reopen
@@ -609,7 +620,7 @@ module usbuvcuart_top(
     reg dumper_latched_r = 1'b0;
     always @(posedge pClk)
         if (RESET_IN)                                dumper_latched_r <= 1'b0;
-        else if (s_dte1_rate == DUMPER_MAGIC_BAUD)   dumper_latched_r <= 1'b1;
+        else if (s_dte1_rate == DUMPER_MAGIC_STORED) dumper_latched_r <= 1'b1;
         else if (s_dte1_rate == CONSOLE_BAUD)        dumper_latched_r <= 1'b0;
     assign ep3_to_dumper = dumper_latched_r;
     wire [7:0]  uart_char_format = s_char1_format;
