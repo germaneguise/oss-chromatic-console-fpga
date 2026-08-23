@@ -253,9 +253,13 @@ module top #(parameter ISSIMU=0)
     // Declared up here because the LCD_EN gating below and the LCD_RESET
     // override both need it; the latch itself lives with the cart-bus mux
     // further down, where the debounced buttons it samples are in scope.
-    reg        dumper_en      = 1'b0;
+    reg        dumper_en      = 1'b0;   // cart bus + panel belong to the reader
+    reg        core_park      = 1'b0;   // emulator held in reset
     reg        dumper_latched = 1'b0;
     reg [23:0] dumper_arm     = 24'd0;
+    wire       ep3_to_dumper;           // magic CDC line rate selects EP3 owner
+    wire       rdr_session;             // reader has completed the LK handshake
+    reg        memrst_pulse   = 1'b0;   // restart core + re-init panel on exit
 
     reg memrst = 1'd0;
 
@@ -399,7 +403,8 @@ module top #(parameter ISSIMU=0)
         if(~lock_o)
             memrst <= 1'd1;
         else
-            memrst <= CART_DET_sr[17:2] == 16'h7FFF || CART_DET_sr[17:2] == 16'h8000;
+            memrst <= CART_DET_sr[17:2] == 16'h7FFF || CART_DET_sr[17:2] == 16'h8000
+                   || memrst_pulse;
 
     mem_system_top #(ISSIMU)
     u_mem_system_top
@@ -483,20 +488,87 @@ module top #(parameter ISSIMU=0)
     wire        rdr_CART_RST, rdr_CART_D_oe, rdr_pullups;
     wire [7:0]  rdr_CART_D_o;
 
-    // Mode is latched ONCE, ~2 s after power-on, by holding SELECT+START. It
-    // deliberately cannot be entered later: taking the bus away mid-game looks
-    // to the core exactly like the cartridge being pulled, and the dumper's
-    // README is emphatic that carts must not be swapped under power. Latching
-    // also keeps this a real runtime signal - tying it to a constant would let
-    // synthesis delete one side of the mux and flatter the resource numbers.
+    // ---- entering and leaving dumper mode -----------------------------
+    //
+    // Two independent gates, so neither can misfire on its own:
+    //
+    //   1. EP3 ownership follows the CDC line rate (see DUMPER_MAGIC_BAUD in
+    //      usbuvcuart_top). Nothing the ESP32 or esptool ever sends can reach
+    //      cart_reader, because they run at 115200. This also means FlashGBX's
+    //      GBxCartRW/GBFlash/JoeyJr probes - which open at 1M/1.5M/2M and
+    //      include an identical 0x55 0xAA - never touch the reader at all.
+    //
+    //   2. The CART BUS only changes hands once the reader reports a live
+    //      session, i.e. the host completed the LK handshake. Answering the
+    //      identify query needs no cart access, so a game keeps running
+    //      untouched while a host merely looks for a dumper.
+    //
+    // SELECT+START at power-on stays as an override for when USB is the thing
+    // that is broken.
+    reg btn_req = 1'b0;
     always @(posedge gClk)
         if (!dumper_latched) begin
             if (&dumper_arm) begin
-                dumper_en      <= BTN_SEL_filtered & BTN_START_filtered;
+                btn_req        <= BTN_SEL_filtered & BTN_START_filtered;
                 dumper_latched <= 1'b1;
             end else
                 dumper_arm <= dumper_arm + 1'b1;
         end
+
+    // Belt and braces: a reader session cannot mean anything unless EP3 is
+    // actually routed to the reader. Requiring both would have contained the
+    // default-true session_active decode that parked the core from boot.
+    wire dumper_req = (rdr_session & ep3_to_dumper) | btn_req;
+
+    // Handover is SEQUENCED, not combinational. A session can begin while a
+    // game is running, and switching the mux mid-M-cycle would corrupt
+    // whatever the core was doing - mid-SRAM-write, that is the player's save.
+    // So: park the core, wait for the bus to be genuinely idle, then take it.
+    // Reverse on the way out, and pulse memrst so the core restarts and
+    // ST7785_init runs again (the panel init sequencer hangs off that reset).
+    reg  [1:0] ho_state = 2'd0;
+    reg  [9:0] ho_cnt   = 10'd0;
+    // Explicitly initialised. Everything else in this block is, and these two
+    // gate core_park - an uninitialised 1 here parks the emulator from boot,
+    // which is the same failure the session_active decode just caused.
+    reg        req_h1 = 1'b0, req_h2 = 1'b0;
+    always @(posedge hClk) begin req_h1 <= dumper_req; req_h2 <= req_h1; end
+
+    wire cart_bus_idle = emu_CART_CS & emu_CART_RD & emu_CART_WR;
+
+    localparam HO_IDLE = 2'd0, HO_PARK = 2'd1, HO_OWN = 2'd2, HO_RELEASE = 2'd3;
+
+    always @(posedge hClk) begin
+        memrst_pulse <= 1'b0;
+        case (ho_state)
+        HO_IDLE: if (req_h2) begin
+                     core_park <= 1'b1;
+                     ho_cnt    <= 10'd0;
+                     ho_state  <= HO_PARK;
+                 end
+        HO_PARK: begin
+                     // 1023 consecutive idle hClk is ~61 us, comfortably longer
+                     // than the ~1 us DMG M-cycle the core might be mid-way
+                     // through when it was parked.
+                     if (cart_bus_idle) ho_cnt <= ho_cnt + 1'b1;
+                     else               ho_cnt <= 10'd0;
+                     if (&ho_cnt) begin dumper_en <= 1'b1; ho_state <= HO_OWN; end
+                 end
+        HO_OWN:  if (!req_h2) begin
+                     dumper_en <= 1'b0;
+                     ho_cnt    <= 10'd0;
+                     ho_state  <= HO_RELEASE;
+                 end
+        HO_RELEASE: begin
+                     ho_cnt <= ho_cnt + 1'b1;
+                     if (&ho_cnt) begin
+                         memrst_pulse <= 1'b1;   // restart core, re-init panel
+                         core_park    <= 1'b0;
+                         ho_state     <= HO_IDLE;
+                     end
+                 end
+        endcase
+    end
 
     assign CART_A          = dumper_en ? rdr_CART_A   : emu_CART_A;
     assign CART_CLK        = dumper_en ? rdr_CART_CLK : emu_CART_CLK;
@@ -518,8 +590,8 @@ module top #(parameter ISSIMU=0)
 
     cart_reader #(.CLK_FREQ(60_000_000)) u_cart_reader (
         .clk                  (PHY_CLKOUT),
-        .reset                (~usblocked | ~dumper_en),
-        .rx_valid             (ep3_rx_valid & dumper_en),
+        .reset                (~usblocked | ~ep3_to_dumper),
+        .rx_valid             (ep3_rx_valid & ep3_to_dumper),
         .rx_data              (ep3_rx_data),
         .tx_valid             (ep3_tx_valid_rdr),
         .tx_data              (ep3_tx_data_rdr),
@@ -534,7 +606,8 @@ module top #(parameter ISSIMU=0)
         .cart_d_in            (CART_D),
         .cart_audio           (),
         .cart_det             (CART_DET),
-        .cart_pullups_enabled (rdr_pullups)
+        .cart_pullups_enabled (rdr_pullups),
+        .session_active       (rdr_session)
     );
 
     emu_system_top u_emu_system_top(
@@ -547,7 +620,7 @@ module top #(parameter ISSIMU=0)
         // merely starved of pixels, its controller is held in reset. Keeping
         // them running leaves the display initialised and quietly showing
         // nothing while the cart bus belongs to cart_reader.
-        .reset_n(~(memrst | dumper_en)),
+        .reset_n(~(memrst | core_park)),
         .POWER_GOOD(~POWER_ON_FPGA),
 
         .customPaletteEna(paletteBGIn[63]),
@@ -723,7 +796,7 @@ module top #(parameter ISSIMU=0)
 
     wire usb_sof_div;
     usbuvcuart_top u_usb_top(
-        .dumper_en(dumper_en),
+        .ep3_to_dumper(ep3_to_dumper),
         .ep3_rx_valid(ep3_rx_valid),
         .ep3_rx_data_o(ep3_rx_data),
         .ep3_tx_valid(ep3_tx_valid_rdr),

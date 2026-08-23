@@ -462,10 +462,56 @@ index 953397f..dbd5f7a 100644
 +		except KeyboardInterrupt:
 +			print("\n\nProgram stopped.")
 diff --git a/FlashGBX/hw_Chromatic.py b/FlashGBX/hw_Chromatic.py
-index 5355955..cba7a39 100644
+index 5355955..f475b7a 100644
 --- a/FlashGBX/hw_Chromatic.py
 +++ b/FlashGBX/hw_Chromatic.py
-@@ -77,8 +77,18 @@ class GbxDevice(LK_Device):
+@@ -13,7 +13,17 @@ class GbxDevice(LK_Device):
+ 	def __init__(self):
+ 		pass
+ 
+-	def Initialize(self, flashcarts, port=None, max_baud=2000000):
++	# The Chromatic gateware routes the CDC data endpoint by dwDTERate: the
++	# ESP32 console bridge is fixed at 115200, and this magic rate is what
++	# hands the endpoint to the cart reader instead. Nothing is sniffed from
++	# the payload, so an esptool firmware image can never be mistaken for a
++	# dumper session - and the GBxCartRW/GBFlash/JoeyJr probes, which open at
++	# 1M/1.5M/2M and include an identical 0x55 0xAA, never reach the reader.
++	def Initialize(self, flashcarts, port=None, max_baud=1337337):
++		# Callers pass max_baud explicitly (FlashGBX_CLI hands us 2000000), so a
++		# default is not enough - override it. This rate is not a line speed,
++		# it is the channel selector the gateware keys on.
++		max_baud = 1337337
+ 		if self.IsConnected(): self.DEVICE.close()
+ 		conn_msg = []
+ 		ports = []
+@@ -27,6 +37,26 @@ class GbxDevice(LK_Device):
+ 			if len(ports) == 0: return False
+ 
+ 		for i in range(0, len(ports)):
++			# Force a line-coding TRANSITION before connecting. Windows caches the
++			# DCB per port, and the gateware resets dwDTERate to 115200 on every
++			# FPGA reload - so the host can believe the port is already at the magic
++			# rate while the device is back at 115200, and a redundant
++			# SET_LINE_CODING may never be sent. Stepping through 115200 guarantees
++			# the magic rate is actually transmitted.
++			_p = None
++			try:
++				_p = serial.Serial(ports[i], 115200, timeout=0.1)
++				_p.baudrate = max_baud
++			except Exception:
++				pass
++			finally:
++				# close in a finally: if setting the rate raises, an except-only
++				# form leaks the handle and every later open gets ACCESS_DENIED.
++				try:
++					if _p is not None and _p.isOpen(): _p.close()
++				except Exception:
++					pass
++				time.sleep(0.35)
+ 			if self.TryConnect(ports[i], max_baud):
+ 				self.BAUDRATE = max_baud
+ 				dev = serial.Serial(ports[i], self.BAUDRATE, timeout=0.1)
+@@ -77,8 +107,18 @@ class GbxDevice(LK_Device):
  			self.DEVICE.reset_input_buffer()
  			self.DEVICE.reset_output_buffer()
  

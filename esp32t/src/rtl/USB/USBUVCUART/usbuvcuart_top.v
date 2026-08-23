@@ -36,10 +36,16 @@ module usbuvcuart_top(
     input               UART_CTS   ,
 
     // EP3 (CDC data) tap. Normally EP3 is the ESP32 UART bridge that
-    // MRUpdater/esptool drive; when dumper_en is set it carries the FlashGBX
+    // MRUpdater/esptool drive; at the magic line rate it carries the FlashGBX
     // protocol to cart_reader instead. Both directions are muxed here rather
     // than upstream so the UART keeps working untouched in normal operation.
-    input               dumper_en,
+    // EP3 ownership is decided by the CDC line rate, not by sniffing payload
+    // bytes. The ESP32 bridge is fixed at 115200 (MRUpdater/esptool never call
+    // change_baud), and our UART ignores the rate entirely since it was pinned
+    // to a constant divisor - so dwDTERate is a free, host-supplied channel
+    // select that no payload can forge. FlashGBX is patched to open at the
+    // magic value; everything else keeps talking to the MCU.
+    output              ep3_to_dumper,
     output              ep3_rx_valid,
     output  [7:0]       ep3_rx_data_o,
     input               ep3_tx_valid,
@@ -576,6 +582,36 @@ module usbuvcuart_top(
     wire [ 7:0] s_data1_bits;
 
     wire [31:0] uart_dte_rate = s_dte1_rate;
+
+    // Magic dwDTERate meaning "this port is the cart dumper, not the MCU".
+    // 322429453 baud is not a rate anything real will ever request.
+    // 1337337 baud. Nothing real requests this, so it keeps the channel-select
+    // property - but unlike the first choice (0x1337D00D = 322,424,845) it is a
+    // magnitude the Windows serial stack actually handles. FlashGBX dumped a
+    // verified 1 MiB from this device at 2000000; at 322 Mbaud it fails inside
+    // ClearCommError under load, while isolated calls pass. The value was the
+    // problem, not the mechanism.
+    localparam [31:0] DUMPER_MAGIC_BAUD = 32'd1337337;
+    localparam [31:0] CONSOLE_BAUD       = 32'd115200;
+
+    // LATCHED, not a live compare of the current rate. Hosts close and reopen
+    // the port freely, and every reopen re-issues SET_LINE_CODING - with a live
+    // compare that momentarily drops the endpoint away from cart_reader, which
+    // resets it and tears down a session mid-operation. Measured: a session
+    // driven from one handle survives 10 s and 25 command round-trips with no
+    // failures, while FlashGBX - which reopens repeatedly - got two truncated
+    // sessions in a row.
+    //
+    // So the magic rate ARMS the reader and only an explicit return to 115200
+    // releases it, which is precisely what "give the console its port back"
+    // means. The 1M/1.5M/2M rates other FlashGBX drivers probe with cannot
+    // clear it, and nothing the ESP32 does ever sets it.
+    reg dumper_latched_r = 1'b0;
+    always @(posedge pClk)
+        if (RESET_IN)                                dumper_latched_r <= 1'b0;
+        else if (s_dte1_rate == DUMPER_MAGIC_BAUD)   dumper_latched_r <= 1'b1;
+        else if (s_dte1_rate == CONSOLE_BAUD)        dumper_latched_r <= 1'b0;
+    assign ep3_to_dumper = dumper_latched_r;
     wire [7:0]  uart_char_format = s_char1_format;
     wire [7:0]  uart_parity_type = s_parity1_type;
     wire [7:0]  uart_data_bits = s_data1_bits;
@@ -1198,7 +1234,7 @@ module usbuvcuart_top(
 
     assign uart_tx_data     = {8'd0,ep3_rx_data};
     // Do not push FlashGBX traffic at the ESP32 while the dumper owns EP3.
-    assign uart_tx_data_val = ep3_rx_dval & ~dumper_en;
+    assign uart_tx_data_val = ep3_rx_dval & ~ep3_to_dumper;
 
     assign ep3_rx_valid  = ep3_rx_dval;
     assign ep3_rx_data_o = ep3_rx_data;
@@ -1245,10 +1281,10 @@ module usbuvcuart_top(
         //Endpoint 3
         ,.i_ep3_tx_clk  (pClk             )
         ,.i_ep3_tx_max  (12'd64           )
-        ,.i_ep3_tx_dval (dumper_en ? ep3_tx_valid : uart_rx_data_val )
-        ,.i_ep3_tx_data (dumper_en ? ep3_tx_data  : uart_rx_data[7:0])
+        ,.i_ep3_tx_dval (ep3_to_dumper ? ep3_tx_valid : uart_rx_data_val )
+        ,.i_ep3_tx_data (ep3_to_dumper ? ep3_tx_data  : uart_rx_data[7:0])
         ,.i_ep3_rx_clk  (pClk             )
-        ,.i_ep3_rx_rdy  (dumper_en ? 1'b1 : !uart_tx_busy)
+        ,.i_ep3_rx_rdy  (ep3_to_dumper ? 1'b1 : !uart_tx_busy)
         ,.o_ep3_rx_dval (ep3_rx_dval      )
         ,.o_ep3_rx_data (ep3_rx_data      )
     );

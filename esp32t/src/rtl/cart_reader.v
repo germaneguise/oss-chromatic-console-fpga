@@ -69,7 +69,12 @@ module cart_reader #(
     input  wire [7:0]  cart_d_in,         // data read from cart
     output reg         cart_audio,
     input  wire        cart_det,          // 0 = no cart (active-low)
-    output reg         cart_pullups_enabled
+    output reg         cart_pullups_enabled,
+    // High once the LK handshake has completed, i.e. the host has committed to
+    // a session and the reader genuinely needs the cart bus. Answering the
+    // 0x55 0xAA identify costs no cart access at all - the ID is a string
+    // constant - so detection can happen with a game still running untouched.
+    output wire        session_active
 );
 
 // ============================================================
@@ -202,6 +207,21 @@ typedef enum {
 // Registers
 // ============================================================
 pstate_t     pstate;
+
+// Registered, and DEFAULT FALSE. The first version decoded this
+// combinationally as "pstate is none of the pre-session states", which is
+// default-TRUE for any encoding the comparisons do not recognise. pstate is an
+// untyped enum, so the tool picks the encoding; a register powering up as all
+// zeros need not be P_INIT, and the decode then claimed a live session before
+// anything had happened - parking the emulator from boot. A flag that can only
+// be SET by observing the session state cannot fail that way.
+reg session_r = 1'b0;
+always @(posedge clk)
+    if (reset)                 session_r <= 1'b0;
+    else if (pstate == P_CMD)  session_r <= 1'b1;
+    else if (pstate == P_INIT) session_r <= 1'b0;
+assign session_active = session_r;
+
 cart_state_t cart_state;
 
 // General parameter accumulator (up to 9 bytes for SET_VARIABLE)
