@@ -30,9 +30,11 @@ module emu_system_top
     output  [15:0]      CART_A,
     output              CART_CLK,
     output              CART_CS,
-    inout   [7:0]       CART_D,
+    input   [7:0]       CART_D,
+    output  [7:0]       CART_D_o,
+    output              CART_D_oe,
     output              CART_RD,
-    inout               CART_RST,
+    input               CART_RST,
     output              CART_WR,
     output              CART_DATA_DIR_E,
 
@@ -177,7 +179,7 @@ module emu_system_top
     wire sel_cram = a[15:13] == 3'b101;           // 8k cart ram at $a000
     wire cart_oe = (rd & ~a[15]) | (sel_cram & rd);
 
-    assign CART_RST = 1'bZ;
+    // CART_RST is read-only here; the top level owns its tristate.
 
     reg gbreset;
     reg gbreset_ungated;
@@ -233,6 +235,8 @@ module emu_system_top
        .CART_CLK        (CART_CLK       ),
        .CART_CS         (CART_CS        ),
        .CART_D          (CART_D         ),
+       .CART_D_o        (CART_D_o       ),
+       .CART_D_oe       (CART_D_oe      ),
        .CART_RD         (CART_RD        ),
        .CART_WR         (CART_WR        ),
        .CART_DATA_DIR_E (CART_DATA_DIR_E),

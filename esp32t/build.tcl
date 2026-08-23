@@ -64,4 +64,5 @@ add_file -type verilog "src/rtl/EMU/CORE/videoBypass.v"
 add_file -type verilog "src/rtl/EMU/audio_resample.v"
 add_file -type verilog "src/rtl/USB/USBUVCUART/color_space_convertor/color_space_convertor.v"
 add_file -type verilog "src/rtl/USB/USBUVCUART/fifo_video/fifo_video_rtl.v"
+add_file -type verilog "src/rtl/cart_reader.v"
 

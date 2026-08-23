@@ -373,7 +373,8 @@ module top #(parameter ISSIMU=0)
         if(~lock_o)
             memrst <= 1'd1;
         else
-            memrst <= CART_DET_sr[17:2] == 16'h7FFF || CART_DET_sr[17:2] == 16'h8000;
+            memrst <= CART_DET_sr[17:2] == 16'h7FFF || CART_DET_sr[17:2] == 16'h8000
+                   || dumper_en;
 
     mem_system_top #(ISSIMU)
     u_mem_system_top
@@ -443,6 +444,77 @@ module top #(parameter ISSIMU=0)
     wire gbc_mode;
     wire [63:0] gpd;
 
+    // ================= cartridge bus ownership =========================
+    // Either the emulator or the dumper drives the cart pins, never both.
+    // CART_D has exactly ONE tristate driver, below - cart.v used to hold its
+    // own, which is why cart.v/emu_system_top now export D_o/D_oe instead.
+    wire [15:0] emu_CART_A;
+    wire        emu_CART_CLK, emu_CART_CS, emu_CART_RD, emu_CART_WR;
+    wire        emu_CART_DATA_DIR_E, emu_CART_D_oe;
+    wire [7:0]  emu_CART_D_o;
+
+    wire [15:0] rdr_CART_A;
+    wire        rdr_CART_CLK, rdr_CART_CS, rdr_CART_RD, rdr_CART_WR;
+    wire        rdr_CART_RST, rdr_CART_D_oe, rdr_pullups;
+    wire [7:0]  rdr_CART_D_o;
+
+    // Mode is latched ONCE, ~2 s after power-on, by holding SELECT+START. It
+    // deliberately cannot be entered later: taking the bus away mid-game looks
+    // to the core exactly like the cartridge being pulled, and the dumper's
+    // README is emphatic that carts must not be swapped under power. Latching
+    // also keeps this a real runtime signal - tying it to a constant would let
+    // synthesis delete one side of the mux and flatter the resource numbers.
+    reg        dumper_en      = 1'b0;
+    reg        dumper_latched = 1'b0;
+    reg [23:0] dumper_arm     = 24'd0;
+    always @(posedge gClk)
+        if (!dumper_latched) begin
+            if (&dumper_arm) begin
+                dumper_en      <= BTN_SEL_filtered & BTN_START_filtered;
+                dumper_latched <= 1'b1;
+            end else
+                dumper_arm <= dumper_arm + 1'b1;
+        end
+
+    assign CART_A          = dumper_en ? rdr_CART_A   : emu_CART_A;
+    assign CART_CLK        = dumper_en ? rdr_CART_CLK : emu_CART_CLK;
+    assign CART_CS         = dumper_en ? rdr_CART_CS  : emu_CART_CS;
+    assign CART_RD         = dumper_en ? rdr_CART_RD  : emu_CART_RD;
+    assign CART_WR         = dumper_en ? rdr_CART_WR  : emu_CART_WR;
+    assign CART_DATA_DIR_E = dumper_en ? ~rdr_CART_D_oe : emu_CART_DATA_DIR_E;
+    assign CART_RST        = dumper_en ? rdr_CART_RST : 1'bZ;
+
+    wire       cart_d_oe = dumper_en ? rdr_CART_D_oe : emu_CART_D_oe;
+    wire [7:0] cart_d_o  = dumper_en ? rdr_CART_D_o  : emu_CART_D_o;
+    assign CART_D = cart_d_oe ? cart_d_o
+                              : ((dumper_en && rdr_pullups) ? 8'hFF : 8'bZ);
+
+    // EP3 is the CDC data endpoint. In normal operation it is the ESP32 UART
+    // bridge that MRUpdater/esptool drive; in dumper mode it carries FlashGBX.
+    wire       ep3_rx_valid, ep3_tx_valid_rdr;
+    wire [7:0] ep3_rx_data,  ep3_tx_data_rdr;
+
+    cart_reader #(.CLK_FREQ(60_000_000)) u_cart_reader (
+        .clk                  (PHY_CLKOUT),
+        .reset                (~usblocked | ~dumper_en),
+        .rx_valid             (ep3_rx_valid & dumper_en),
+        .rx_data              (ep3_rx_data),
+        .tx_valid             (ep3_tx_valid_rdr),
+        .tx_data              (ep3_tx_data_rdr),
+        .cart_a               (rdr_CART_A),
+        .cart_clk             (rdr_CART_CLK),
+        .cart_cs              (rdr_CART_CS),
+        .cart_rd              (rdr_CART_RD),
+        .cart_wr              (rdr_CART_WR),
+        .cart_rst             (rdr_CART_RST),
+        .cart_data_dir_e      (rdr_CART_D_oe),
+        .cart_d_out           (rdr_CART_D_o),
+        .cart_d_in            (CART_D),
+        .cart_audio           (),
+        .cart_det             (CART_DET),
+        .cart_pullups_enabled (rdr_pullups)
+    );
+
     emu_system_top u_emu_system_top(
         .hclk(hClk),
         .pclk(pClk),
@@ -469,14 +541,16 @@ module top #(parameter ISSIMU=0)
         .BTN_START(BTN_START_filtered | MCU_buttons[0]),
         .MENU_CLOSED(menuDisabled & ~slideOutActive),
 
-        .CART_A(CART_A),
-        .CART_CLK(CART_CLK),
-        .CART_CS(CART_CS),
+        .CART_A(emu_CART_A),
+        .CART_CLK(emu_CART_CLK),
+        .CART_CS(emu_CART_CS),
         .CART_D(CART_D),
-        .CART_RD(CART_RD),
+        .CART_D_o(emu_CART_D_o),
+        .CART_D_oe(emu_CART_D_oe),
+        .CART_RD(emu_CART_RD),
         .CART_RST(CART_RST),
-        .CART_WR(CART_WR),
-        .CART_DATA_DIR_E(CART_DATA_DIR_E),
+        .CART_WR(emu_CART_WR),
+        .CART_DATA_DIR_E(emu_CART_DATA_DIR_E),
 
         .IR_RX(IR_RX),
         .IR_LED(IR_LED),
@@ -620,6 +694,11 @@ module top #(parameter ISSIMU=0)
 
     wire usb_sof_div;
     usbuvcuart_top u_usb_top(
+        .dumper_en(dumper_en),
+        .ep3_rx_valid(ep3_rx_valid),
+        .ep3_rx_data_o(ep3_rx_data),
+        .ep3_tx_valid(ep3_tx_valid_rdr),
+        .ep3_tx_data(ep3_tx_data_rdr),
         .CLK_24MHz(CLK_24MHz),
         .ERST(usbrst),
         .pClk(PHY_CLKOUT),

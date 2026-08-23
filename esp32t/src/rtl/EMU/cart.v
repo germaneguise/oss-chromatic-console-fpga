@@ -23,7 +23,11 @@ module cart
     output  reg [15:0]  CART_A,
     output              CART_CLK,
     output  reg         CART_CS = 1'd1,
-    inout   [7:0]       CART_D,
+    // Read-back only. The pin's single tristate driver lives at the top level
+    // so the cart bus can be handed to the dumper without two drivers fighting.
+    input   [7:0]       CART_D,
+    output  [7:0]       CART_D_o,
+    output              CART_D_oe,
     output  reg         CART_RD,
     output  reg         CART_WR = 1'd1,
     output              CART_DATA_DIR_E,
@@ -38,7 +42,8 @@ module cart
     assign CART_CLK = phi; 
     
     reg [7:0]   CART_DOUT_r1;
-    assign CART_D = CART_DATA_DIR ? CART_DOUT_r1 : {8{1'bZ}};
+    assign CART_D_o  = CART_DOUT_r1;
+    assign CART_D_oe = CART_DATA_DIR;
 
     wire [7:0]  CART_DIN; 
     assign CART_DIN = CART_D;

@@ -33,7 +33,17 @@ module usbuvcuart_top(
     input               UART_RXD   ,
     output              E_UART_DTR   , // when UART_RTS = 0, UART This Device Ready to receive.
     output              E_UART_RTS   , // when UART_RTS = 0, UART This Device Ready to receive.
-    input               UART_CTS   , // when UART_CTS = 0, UART Opposite Device Ready to receive.
+    input               UART_CTS   ,
+
+    // EP3 (CDC data) tap. Normally EP3 is the ESP32 UART bridge that
+    // MRUpdater/esptool drive; when dumper_en is set it carries the FlashGBX
+    // protocol to cart_reader instead. Both directions are muxed here rather
+    // than upstream so the UART keeps working untouched in normal operation.
+    input               dumper_en,
+    output              ep3_rx_valid,
+    output  [7:0]       ep3_rx_data_o,
+    input               ep3_tx_valid,
+    input   [7:0]       ep3_tx_data, // when UART_CTS = 0, UART Opposite Device Ready to receive.
 
     input [15:0]        left,
     input [15:0]        right,
@@ -1187,7 +1197,11 @@ module usbuvcuart_top(
     wire [7:0]  ep3_rx_data;
 
     assign uart_tx_data     = {8'd0,ep3_rx_data};
-    assign uart_tx_data_val = ep3_rx_dval;
+    // Do not push FlashGBX traffic at the ESP32 while the dumper owns EP3.
+    assign uart_tx_data_val = ep3_rx_dval & ~dumper_en;
+
+    assign ep3_rx_valid  = ep3_rx_dval;
+    assign ep3_rx_data_o = ep3_rx_data;
     UART  #(
         .CLK_FREQ     (30'd60000000)  // set system clock frequency in Hz
     )u_UART
@@ -1231,10 +1245,10 @@ module usbuvcuart_top(
         //Endpoint 3
         ,.i_ep3_tx_clk  (pClk             )
         ,.i_ep3_tx_max  (12'd64           )
-        ,.i_ep3_tx_dval (uart_rx_data_val )
-        ,.i_ep3_tx_data (uart_rx_data[7:0])
+        ,.i_ep3_tx_dval (dumper_en ? ep3_tx_valid : uart_rx_data_val )
+        ,.i_ep3_tx_data (dumper_en ? ep3_tx_data  : uart_rx_data[7:0])
         ,.i_ep3_rx_clk  (pClk             )
-        ,.i_ep3_rx_rdy  (!uart_tx_busy    )
+        ,.i_ep3_rx_rdy  (dumper_en ? 1'b1 : !uart_tx_busy)
         ,.o_ep3_rx_dval (ep3_rx_dval      )
         ,.o_ep3_rx_data (ep3_rx_data      )
     );
