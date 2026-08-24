@@ -58,7 +58,11 @@ module emu_system_top
     
 );
 
-    parameter SRSIZE = 15;
+    // The buttons arriving here are already debounced in the gClk domain
+    // (top.v button_debouncer / MCU_buttons); these shift registers only
+    // synchronise them into pclk. 3 stages = 2 sync FFs plus one agreement
+    // sample; the old 15 added 360 ns of pointless filtering for 96 FFs.
+    parameter SRSIZE = 3;
 
     reg [SRSIZE-1:0] BTN_DPAD_DOWN_sr;
     reg [SRSIZE-1:0] BTN_DPAD_UP_sr;

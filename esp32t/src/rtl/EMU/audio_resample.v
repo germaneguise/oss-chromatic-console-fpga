@@ -57,15 +57,11 @@ always @(posedge clk) begin
 	sample_ce <= !div;
 end
 
-// Same construction audio_filter used: take a value only once it has been
-// stable for two clocks.
-reg [15:0] cl1, cl2, cl, cr1, cr2, cr;
-always @(posedge clk) begin
-	cl1 <= core_l; cl2 <= cl1;
-	if (cl2 == cl1) cl <= cl2;
-	cr1 <= core_r; cr2 <= cr1;
-	if (cr2 == cr1) cr <= cr2;
-end
+// audio_filter's "stable for two clocks" input guard is dropped: core_l/r
+// come from gbc_snd's registered mixer in the SAME hClk domain, so they are
+// stable every cycle by construction. The guard was a vestige of MiSTer's
+// cross-domain use; the real crossing (gClk consumers) is handled by the
+// sample_ce hold below, exactly as before.
 
 // audio_filter muted until its pipeline had filled (~125 ms, dly2[13] at
 // sample_ce). Keep it: without a ramp the codec plays whatever is on the bus
@@ -83,8 +79,8 @@ always @(posedge clk or posedge reset) begin
 	else if (sample_ce) begin
 		if (!dly[13]) dly <= dly + 1'd1;
 		else          en  <= 1'b1;
-		out_l <= en ? cl : 16'd0;
-		out_r <= en ? cr : 16'd0;
+		out_l <= en ? core_l : 16'd0;
+		out_r <= en ? core_r : 16'd0;
 	end
 end
 
