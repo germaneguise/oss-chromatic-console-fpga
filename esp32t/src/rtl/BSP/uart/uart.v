@@ -46,7 +46,7 @@ module UART2
     wire       div_cmpl;
     wire  [1:0] div_correct = 'd3;
 
-    wire [23:0] divider_value = 'd72;// = CLK_FREQ/(15*BAUD_RATE);
+    wire [9:0] divider_value = 'd72;// = CLK_FREQ/(15*BAUD_RATE);
     // -------------------------------------------------------------------------
     // UART DIVIDER VALUE
     // -------------------------------------------------------------------------

@@ -44,7 +44,7 @@ module UART
     wire       uart_tx_busy       ;
     reg  [1:0] div_correct;
 
-    reg [23:0] divider_value;
+    reg [9:0] divider_value;
     // -------------------------------------------------------------------------
     // UART DIVIDER VALUE
     // -------------------------------------------------------------------------
@@ -62,7 +62,7 @@ module UART
     // Fixed_Point_Divider IP. That divider was NOT an integer divider: it
     // returned the quotient with 3 fractional bits and its dividend was
     // CLK_FREQ*4, so DIV_OUT = (CLK_FREQ * 32) / BAUD, where
-    //   [28:5] = floor(CLK_FREQ / BAUD)  clocks per bit (520 @ 115200, 65 @ 921600)
+    //   [14:5] = floor(CLK_FREQ / BAUD)  clocks per bit (520 @ 115200, 65 @ 921600)
     //   [4:3]  = quarter-bit correction  (3 @ 115200, 0 @ 921600)
     // CLK_FREQ is 60 MHz here: usbuvcuart_top's pClk is PHY_CLKOUT, not the
     // 33.55 MHz pclk. Reading DIV_OUT as a plain integer divide runs the link
@@ -72,14 +72,14 @@ module UART
 
     always @(posedge CLK or posedge RST) begin
         if (RST) begin
-            divider_value <= DIV_OUT_115200[28:5];
+            divider_value <= DIV_OUT_115200[14:5];
             div_correct   <= DIV_OUT_115200[4:3];
         end
         else begin
             case (BAUD_RATE)
-                32'd921600 : begin divider_value <= DIV_OUT_921600[28:5]; div_correct <= DIV_OUT_921600[4:3]; end
+                32'd921600 : begin divider_value <= DIV_OUT_921600[14:5]; div_correct <= DIV_OUT_921600[4:3]; end
                 // 115200, and any unsupported rate, falls back to 115200
-                default    : begin divider_value <= DIV_OUT_115200[28:5]; div_correct <= DIV_OUT_115200[4:3]; end
+                default    : begin divider_value <= DIV_OUT_115200[14:5]; div_correct <= DIV_OUT_115200[4:3]; end
             endcase
         end
     end

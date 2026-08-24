@@ -25,7 +25,7 @@ entity UART_TX is
         PARITY_BIT  : in  std_logic_vector(7 downto 0);
         STOP_BIT    : in  std_logic_vector(7 downto 0);
         DATA_BITS   : in  std_logic_vector(7 downto 0);
-        DIVIDER_VALUE : in  std_logic_vector(23 downto 0);
+        DIVIDER_VALUE : in  std_logic_vector(9 downto 0);
         DIV_CORRECT  : in  std_logic_vector(1 downto 0);
         -- USER DATA INPUT INTERFACE
         DATA_IN     : in  std_logic_vector(15 downto 0);
@@ -39,12 +39,12 @@ architecture FULL of UART_TX is
     signal tx_clk_en         : std_logic;
     signal tx_hf_clk_en      : std_logic;
     signal tx_clk_divider_en : std_logic;
-    signal tx_ticks          : unsigned(23 downto 0);
+    signal tx_ticks          : unsigned(9 downto 0);
     signal tx_data           : std_logic_vector(15 downto 0);
     signal parity_bit_reg    : std_logic_vector(7 downto 0);
     signal stop_bit_reg      : std_logic_vector(7 downto 0);
     signal data_bits_reg     : std_logic_vector(7 downto 0);
-    signal divider_value_reg : std_logic_vector(23 downto 0);
+    signal divider_value_reg : std_logic_vector(9 downto 0);
     signal div_correct_reg   : std_logic_vector(1 downto 0);
     signal tx_bit_count      : unsigned(3 downto 0);
     signal tx_bit_count_en   : std_logic;
@@ -52,7 +52,7 @@ architecture FULL of UART_TX is
     signal tx_parity_bit     : std_logic;
     signal parity_temp       : std_logic;
     signal tx_data_out_sel   : std_logic_vector(1 downto 0);
-    signal uart_ticks        : unsigned(15 downto 0);
+    signal uart_ticks        : unsigned(9 downto 0);
     signal uart_clk_en       : std_logic;
 
     type state is (idle, txsync, startbit, databits, paritybit, stopbit, stopbit15, stopbit2);
@@ -97,7 +97,7 @@ begin
                         tx_clk_en <= '0';
                         tx_hf_clk_en <= '0';
                     --elsif (tx_ticks = "0001") then
-                    elsif (tx_ticks = "000000000000000000000001") then
+                    elsif (tx_ticks = "0000000001") then
                         tx_ticks <= tx_ticks + 1;
                         tx_clk_en <= '1';
                         tx_hf_clk_en <= '1';
@@ -117,7 +117,7 @@ begin
                         tx_clk_en <= '0';
                         tx_hf_clk_en <= '0';
                     --elsif (tx_ticks = "0001") then
-                    elsif (tx_ticks = "000000000000000000000001") then
+                    elsif (tx_ticks = "0000000001") then
                         tx_ticks <= tx_ticks + 1;
                         tx_clk_en <= '1';
                         tx_hf_clk_en <= '1';
@@ -137,7 +137,7 @@ begin
                         tx_clk_en <= '0';
                         tx_hf_clk_en <= '0';
                     --elsif (tx_ticks = "0001") then
-                    elsif (tx_ticks = "000000000000000000000001") then
+                    elsif (tx_ticks = "0000000001") then
                         tx_ticks <= tx_ticks + 1;
                         tx_clk_en <= '1';
                         tx_hf_clk_en <= '1';
@@ -157,7 +157,7 @@ begin
                         tx_clk_en <= '0';
                         tx_hf_clk_en <= '0';
                     --elsif (tx_ticks = "0001") then
-                    elsif (tx_ticks = "000000000000000000000001") then
+                    elsif (tx_ticks = "0000000001") then
                         tx_ticks <= tx_ticks + 1;
                         tx_clk_en <= '1';
                         tx_hf_clk_en <= '1';
@@ -204,11 +204,16 @@ begin
     begin
         if (rising_edge(CLK)) then
             if (RST = '1') then
-                parity_bit_reg <= (others => '0');
-                stop_bit_reg  <= (others => '0');
-                data_bits_reg <= "00001000";
-                divider_value_reg <= "000000000000000000100000";
-                div_correct_reg <= "00";
+                -- Reset from the ports, not literals: with constant config
+                -- (both instantiations tie the framing, and UART2 also the
+                -- divider) the register is then provably constant and folds
+                -- away. The old reset values disagreed with the ports, so
+                -- even tied-off configs kept registers and compare logic.
+                parity_bit_reg <= PARITY_BIT;
+                stop_bit_reg  <= STOP_BIT;
+                data_bits_reg <= DATA_BITS;
+                divider_value_reg <= DIVIDER_VALUE;
+                div_correct_reg <= DIV_CORRECT;
             elsif ((tx_pstate = txsync) or (tx_pstate = idle)) then
             --else
                 parity_bit_reg <= PARITY_BIT;
