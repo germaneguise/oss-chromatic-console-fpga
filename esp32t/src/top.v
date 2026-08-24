@@ -428,14 +428,23 @@ module top #(parameter ISSIMU=0)
     wire BTN_SEL_filtered;
     wire BTN_START_filtered;
 
-    button_debouncer debouncer_A         (gClk, BTN_A         , BTN_A_filtered         );
-    button_debouncer debouncer_B         (gClk, BTN_B         , BTN_B_filtered         );
-    button_debouncer debouncer_DPAD_DOWN (gClk, BTN_DPAD_DOWN , BTN_DPAD_DOWN_filtered );
-    button_debouncer debouncer_DPAD_LEFT (gClk, BTN_DPAD_LEFT , BTN_DPAD_LEFT_filtered );
-    button_debouncer debouncer_DPAD_RIGHT(gClk, BTN_DPAD_RIGHT, BTN_DPAD_RIGHT_filtered);
-    button_debouncer debouncer_DPAD_UP   (gClk, BTN_DPAD_UP   , BTN_DPAD_UP_filtered   );
-    button_debouncer debouncer_SEL       (gClk, BTN_SEL       , BTN_SEL_filtered       );
-    button_debouncer debouncer_START     (gClk, BTN_START     , BTN_START_filtered     );
+    // One shared prescaler for all eight debouncers; see button_debounce.v
+    // for how 2^11 x 8 keeps the old 2^14-cycle (~2 ms) window.
+    reg [10:0] db_prescale = 'd0;
+    reg        db_tick = 1'b0;
+    always@(posedge gClk) begin
+        db_prescale <= db_prescale + 1'd1;
+        db_tick     <= db_prescale == 11'd0;
+    end
+
+    button_debouncer debouncer_A         (gClk, db_tick, BTN_A         , BTN_A_filtered         );
+    button_debouncer debouncer_B         (gClk, db_tick, BTN_B         , BTN_B_filtered         );
+    button_debouncer debouncer_DPAD_DOWN (gClk, db_tick, BTN_DPAD_DOWN , BTN_DPAD_DOWN_filtered );
+    button_debouncer debouncer_DPAD_LEFT (gClk, db_tick, BTN_DPAD_LEFT , BTN_DPAD_LEFT_filtered );
+    button_debouncer debouncer_DPAD_RIGHT(gClk, db_tick, BTN_DPAD_RIGHT, BTN_DPAD_RIGHT_filtered);
+    button_debouncer debouncer_DPAD_UP   (gClk, db_tick, BTN_DPAD_UP   , BTN_DPAD_UP_filtered   );
+    button_debouncer debouncer_SEL       (gClk, db_tick, BTN_SEL       , BTN_SEL_filtered       );
+    button_debouncer debouncer_START     (gClk, db_tick, BTN_START     , BTN_START_filtered     );
 
     wire [63:0] paletteBGIn;
     wire [63:0] paletteOBJ0In;
