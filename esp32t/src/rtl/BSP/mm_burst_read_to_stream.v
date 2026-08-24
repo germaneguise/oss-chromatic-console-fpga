@@ -32,8 +32,8 @@ module mm_burst_read_to_stream #(
       for (i = 0; i < LINE_DEPTH; i = i + 1) lineRam[i] = 16'b0;
     end
     
-    reg [14:0] xLineRam_wa;
-    reg [14:0] hLineRam_ra;
+    reg [7:0] xLineRam_wa; // LINE_DEPTH = 160
+    reg [7:0] hLineRam_ra;
 
     reg hVsync_r1;
     always@(posedge hClk)

@@ -39,7 +39,7 @@ module vid_system_top #(parameter ISSIMU=0)
     input               debug_system_on,
 
     output              hGBNewLine,
-    output reg [22:0]   hGBAddress,
+    output [22:0]       hGBAddress,
     output              hGBWrite,
     output  [15:0]      hGBData,
 
@@ -93,16 +93,20 @@ module vid_system_top #(parameter ISSIMU=0)
         hVsync_r1 <= hVsync;
     end
 
+    // 17 bits hold the full range (0x10000 + 144*320 = 111,616 < 2^17);
+    // the 23-bit port keeps its width for mem_system_top.
+    reg [16:0] hGBAddr_cnt;
+    assign hGBAddress = {6'd0, hGBAddr_cnt};
     reg hGBFrameBufferNum;
     always@(posedge hClk)
     begin
         if(hVsync&~hVsync_r1)
         begin
-           hGBAddress        <= 23'h10000;
+           hGBAddr_cnt       <= 17'h10000;
         end
         else
             if(hGBNewLine&~hVsync)
-                hGBAddress <= hGBAddress + 'd320;
+                hGBAddr_cnt <= hGBAddr_cnt + 'd320;
     end
 
     assign  hGBWrite    = gb_lcd_clkena;

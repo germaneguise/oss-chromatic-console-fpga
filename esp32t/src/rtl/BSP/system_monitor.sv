@@ -52,23 +52,21 @@ module system_monitor(
     wire    [79:0]  rx_data;
     wire            rx_data_val;
 
-    reg [15:0] btnMenu_sr;
+    reg [1:0] btnMenu_sr; // 2-bit aged-edge detect; inputs are debounced
     reg btnMenu_r1;
     reg btnMenu_r2;
 
-    reg [15:0] btnDown_sr;
     reg btnDown_r1;
     reg btnDown_r2;
 
-    reg [15:0] btnUp_sr;
     reg btnUp_r1;
     reg btnUp_r2;
 
-    reg [15:0] btnLeft_sr;
+    reg [1:0] btnLeft_sr;
     reg btnLeft_r1;
     reg btnLeft_r2;
 
-    reg [15:0] btnRight_sr;
+    reg [1:0] btnRight_sr;
     reg btnRight_r1;
     reg btnRight_r2;
 
@@ -150,7 +148,7 @@ module system_monitor(
             end
 
             if (menuDisabled) begin
-                if((btnLeft_sr[15:0] == 16'h8000)&&~btnMenu_r2) begin
+                if((btnLeft_sr == 2'b10)&&~btnMenu_r2) begin
                     if(brightness >= 1)
                     begin
                         brightness <= brightness - 9'd1;
@@ -159,7 +157,7 @@ module system_monitor(
                         updateBrightness <= 1'b1;
                     end
                 end
-                if((btnRight_sr[15:0] == 16'h8000)&&~btnMenu_r2) begin
+                if((btnRight_sr == 2'b10)&&~btnMenu_r2) begin
                     if(brightness != 15)
                     begin
                         pressed <= 1'd0;
@@ -204,11 +202,11 @@ module system_monitor(
         end else begin
             btnMenu_r1 <= BTN_MENU;
             btnMenu_r2 <= btnMenu_r1;
-            btnMenu_sr <= {btnMenu_sr[14:0], btnMenu_r2};
-            if(btnMenu_sr[15:0] == 16'h8000) begin
+            btnMenu_sr <= {btnMenu_sr[0], btnMenu_r2};
+            if(btnMenu_sr == 2'b10) begin
                menuDown <= 1'b1;
             end
-            if(btnMenu_sr[15:0] == 16'h7FFF && menuDown) begin
+            if(btnMenu_sr == 2'b01 && menuDown) begin
                menuDisabled <= ~menuDisabled;
                menuDown     <= 1'b0;
             end
@@ -217,19 +215,17 @@ module system_monitor(
 
             btnDown_r1 <= BTN_DPAD_DOWN;
             btnDown_r2 <= btnDown_r1;
-            btnDown_sr <= {btnDown_sr[14:0], btnDown_r2};
 
             btnUp_r1 <= BTN_DPAD_UP;
             btnUp_r2 <= btnUp_r1;
-            btnUp_sr <= {btnUp_sr[14:0], btnUp_r2};
 
             btnLeft_r1 <= BTN_DPAD_LEFT;
             btnLeft_r2 <= btnLeft_r1;
-            btnLeft_sr <= {btnLeft_sr[14:0], btnLeft_r2};
+            btnLeft_sr <= {btnLeft_sr[0], btnLeft_r2};
 
             btnRight_r1 <= BTN_DPAD_RIGHT;
             btnRight_r2 <= btnRight_r1;
-            btnRight_sr <= {btnRight_sr[14:0], btnRight_r2};
+            btnRight_sr <= {btnRight_sr[0], btnRight_r2};
 
             btnSelect_r1 <= BTN_SEL;
             btnSelect_r2 <= btnSelect_r1;

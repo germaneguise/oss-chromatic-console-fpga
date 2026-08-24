@@ -26,15 +26,15 @@ module ST7785_init #(parameter ISSIMU=0)
 
     localparam DATA_MAX_CNT = 127;
     
-    wire[23:0] RESETSTART = ISSIMU ? 2000 : 0;
-    wire[23:0] RESETEND   = ISSIMU ? 3000 : 80000;
-    wire[23:0] DELAYMAX   = ISSIMU ? 5000 : 90000;
-    wire[17:0] DELAYEND   = ISSIMU ? 18'd500 : 18'd2560;
+    wire[16:0] RESETSTART = ISSIMU ? 2000 : 0;
+    wire[16:0] RESETEND   = ISSIMU ? 3000 : 80000;
+    wire[16:0] DELAYMAX   = ISSIMU ? 5000 : 90000;
+    wire[11:0] DELAYEND   = ISSIMU ? 12'd500 : 12'd2560;
 
     reg[8:0] sets[127:0] /* synthesis syn_romstyle = "distributed_rom" */;
     reg[6:0] data_cnt;
     reg[4:0] bit_cnt;
-    reg[23:0] delay_cnt;
+    reg[16:0] delay_cnt;  // counts to DELAYMAX = 90000
 
     initial begin
         $readmemb("regs.bin", sets);
@@ -68,7 +68,7 @@ module ST7785_init #(parameter ISSIMU=0)
         if(clk_out_ne)
             txdata <= sets[data_cnt];
         
-    reg [17:0] delay_cnt2;
+    reg [11:0] delay_cnt2; // counts to DELAYEND = 2560
         
     reg [7:0] datasr;
     reg [7:0] max_cnt;
