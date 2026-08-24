@@ -146,6 +146,11 @@ architecture SYN of gbc_snd is
     signal noi_envper_old    : std_logic_vector(2 downto 0); -- noi old envelope period  (used in zombie mode)
     signal noi_freqsh        : std_logic_vector(3 downto 0);
     signal noi_freqchange    : std_logic;
+    -- Keep the NRxx write-pulse decode in logic: rom_style auto bundles
+    -- this cone (netlist name noi_freqchange_s*) into an 18 Kbit pROM,
+    -- burning a BSRAM on a nearly-empty lookup.
+    attribute syn_romstyle : string;
+    attribute syn_romstyle of noi_freqchange : signal is "logic";
     signal noi_short         : std_logic;
     signal noi_div           : std_logic_vector(2 downto 0);
     signal noi_trigger       : std_logic;

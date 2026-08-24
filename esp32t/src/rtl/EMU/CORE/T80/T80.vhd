@@ -143,6 +143,11 @@ architecture rtl of T80 is
 	signal I                    : std_logic_vector(7 downto 0);
 	signal R                    : unsigned(7 downto 0);
 	signal SP, PC               : unsigned(15 downto 0);
+	-- Keep the PC next-value cone in logic: rom_style auto turns part of
+	-- it (netlist name PC_*_s*) into an 18 Kbit pROM for a sparse lookup.
+	attribute syn_romstyle : string;
+	attribute syn_romstyle of PC : signal is "logic";
+	attribute syn_romstyle of F : signal is "logic";
 
 	signal RegDIH               : std_logic_vector(7 downto 0);
 	signal RegDIL               : std_logic_vector(7 downto 0);
@@ -173,6 +178,7 @@ architecture rtl of T80 is
 	signal MCycle               : std_logic_vector(2 downto 0);
 	signal IntE_FF1             : std_logic;
 	signal IntE_FF2             : std_logic;
+	attribute syn_romstyle of IntE_FF2 : signal is "logic";
 	signal Halt_FF              : std_logic;
 	signal BusReq_s             : std_logic;
 	signal BusAck               : std_logic;
