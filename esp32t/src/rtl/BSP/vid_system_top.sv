@@ -458,15 +458,17 @@ module color_correction(
     wire [7:0] g8 = (green * 'd3) + blue; // 252
     wire [9:0] b10 = (red * 'd3) + (green * 'd2) + (blue * 'd11); // 1008
 
-    wire [15:0] rlcd1 = red[5:1]  * 'd216  + green[5:1] * 'd30;
-    wire [15:0] rlcd2 = blue[5:1] * 'd25;
-    wire [15:0] rlcd3 = ( rlcd1 < rlcd2 ) ? 'd0 : rlcd1 - rlcd2;
-    wire [15:0] glcd = red[5:1] * 'd39  + green[5:1] * 'd137 +  blue[5:1] * 'd24;//620 + 1054 + 217 = 1891
-    wire [15:0] blcd = red[5:1] * 'd21  + green[5:1] * 'd24 +  blue[5:1] * 'd125;//620 + 1054 + 217 = 1891
+    // Maxima: rlcd1 7,626, glcd 6,200, blcd 5,270 - all under 2^13, so 13
+    // bits suffice and the old [13]-based saturation muxes were dead code.
+    wire [12:0] rlcd1 = red[5:1]  * 'd216  + green[5:1] * 'd30;
+    wire [9:0]  rlcd2 = blue[5:1] * 'd25;
+    wire [12:0] rlcd3 = ( rlcd1 < rlcd2 ) ? 'd0 : rlcd1 - rlcd2;
+    wire [12:0] glcd = red[5:1] * 'd39  + green[5:1] * 'd137 +  blue[5:1] * 'd24;
+    wire [12:0] blcd = red[5:1] * 'd21  + green[5:1] * 'd24 +  blue[5:1] * 'd125;
 
-    wire [5:0] blcdc = blcd[13] ? 6'h3F : blcd[12:7];
-    wire [5:0] glcdc = glcd[13] ? 6'h3F : glcd[12:7];
-    wire [5:0] rlcdc = rlcd3[13] ? 6'h3F : rlcd3[12:7];
+    wire [5:0] blcdc = blcd[12:7];
+    wire [5:0] glcdc = glcd[12:7];
+    wire [5:0] rlcdc = rlcd3[12:7];
 
     always@(posedge hClk)
     begin

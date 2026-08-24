@@ -565,7 +565,7 @@ module usbuvcuart_top(
     wire [31:0] uart_dte_rate = s_dte1_rate;
 
     reg [2:0] hdr_len; /* Control header offset, also indicates header ready */
-    reg [15:0] cdata_ofs;
+    reg [5:0] cdata_ofs; // control-transfer byte offset, never exceeds 34
     reg cdata_rxtx; /* Need to handle RX/TX after control request */
     reg cdata_phase_active; /* data phase of control request is active */
 
@@ -588,7 +588,7 @@ module usbuvcuart_top(
                         bmRequestType <= usb_rxdat;
                         cdata_rxtx <= 0;
                         cdata_phase_active <= 0;
-                        cdata_ofs <= 16'd0;
+                        cdata_ofs <= 6'd0;
                     end
                     8'd1 : bRequest <= usb_rxdat;
                     8'd2 : wValue[7:0] <= usb_rxdat;
@@ -607,7 +607,7 @@ module usbuvcuart_top(
                 if (cdata_rxtx) begin
                     if ((usb_rxact && usb_rxval)
                             || (usb_txact && usb_txpop)) begin
-                        cdata_ofs <= cdata_ofs + 16'd1;
+                        cdata_ofs <= cdata_ofs + 6'd1;
                     end
                     if (usb_rxact || usb_txact) begin
                         cdata_phase_active <= 1'b1;
@@ -1325,7 +1325,7 @@ module ctrl_uart(
     input [15:0] wValue,
     input [15:0] wIndex,
     input [15:0] wLength,
-    input [15:0] cdata_ofs,
+    input [5:0] cdata_ofs,
     input [7:0] usb_rxdat,
     input usb_rxact,
     input usb_rxval,
@@ -1426,7 +1426,7 @@ module ctrl_uvc(
     input [15:0] wValue,
     input [15:0] wIndex,
     input [15:0] wLength,
-    input [15:0] cdata_ofs,
+    input [5:0] cdata_ofs,
     input [ 7:0] usb_rxdat,
     input usb_rxact,
     input usb_rxval,
@@ -1584,7 +1584,7 @@ module ctrl_uac(
     input [15:0] wValue,
     input [15:0] wIndex,
     input [15:0] wLength,
-    input [15:0] cdata_ofs,
+    input [5:0] cdata_ofs,
     input [7:0] usb_rxdat,
     input usb_rxact,
     input usb_rxval,

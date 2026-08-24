@@ -44,11 +44,15 @@ architecture SYN of gbc_snd is
 		port(
 			clk : in std_logic;
 			ce : in std_logic;
+			decay_tick : in std_logic;
 			dac_en : in std_logic;
 			dac_input : in std_logic_vector(3 downto 0);
 			dac_output : out signed(8 downto 0)
 		);
 	end component;
+
+	signal dac_decay_cnt  : integer range 0 to 100 := 0;
+	signal dac_decay_tick : std_logic := '0';
 
 
     subtype wav_t is std_logic_vector(3 downto 0);
@@ -855,7 +859,7 @@ begin
 		variable sq1_sduty       : std_logic_vector(1 downto 0); -- Sq1 duty cycle shadow register
 		variable sq1_trigger_freq : std_logic_vector(10 downto 0); 
 		variable acc_fcnt        : unsigned(11 downto 0);
-		variable tmp_volume      : unsigned(7 downto 0); -- used in zombie mode
+		variable tmp_volume      : unsigned(4 downto 0); -- used in zombie mode; values 0..16
 	begin
 		sq1_dac_en <= '1';
 		if sq1_svol & sq1_envsgn = "00000" then
@@ -1033,17 +1037,17 @@ begin
 					if ((sq1_trigger_r = '1' and sq1_trigger = '0') or sq1_nr2change = '1') and sq1_playing = '1' then  -- falling edge of trigger
 						-- using sameboy's logic
 						-- "zombie" mode
-						tmp_volume := "0000" & unsigned(sq1_vol);
+						tmp_volume := "0" & unsigned(sq1_vol);
 
 						if sq1_envsgn = '1' then 
 								tmp_volume :=  tmp_volume  + 1;
 						end if;
 
 						if (sq1_envsgn xor sq1_envsgn_old) = '1' then
-								tmp_volume := X"10" - tmp_volume;
+								tmp_volume := "10000" - tmp_volume;
 						end if;
 
-						if (sq1_envper /=  "000") and (sq1_envper_old = "000") and (tmp_volume /= "00000000") and (sq1_envsgn = '0') then 
+						if (sq1_envper /=  "000") and (sq1_envper_old = "000") and (tmp_volume /= "00000") and (sq1_envsgn = '0') then 
 								tmp_volume := tmp_volume - 1;
 						end if;
 
@@ -1160,7 +1164,7 @@ begin
 		variable sq2_sduty       : std_logic_vector(1 downto 0); -- Sq2 duty cycle shadow register
 		variable sq2_trigger_freq : std_logic_vector(10 downto 0); 
 		variable acc_fcnt        : unsigned(11 downto 0);
-		variable tmp_volume      : unsigned(7 downto 0); -- used in zombie mode
+		variable tmp_volume      : unsigned(4 downto 0); -- used in zombie mode; values 0..16
 	begin
 		sq2_dac_en <= '1';
 		if sq2_svol & sq2_envsgn = "00000" then
@@ -1265,17 +1269,17 @@ begin
 
 						-- using sameboy's logic
 						-- "zombie" mode
-						tmp_volume := "0000" & unsigned(sq2_vol);
+						tmp_volume := "0" & unsigned(sq2_vol);
 
 						if sq2_envsgn = '1' then 
 							tmp_volume :=  tmp_volume  + 1;
 						end if;
 
 						if (sq2_envsgn xor sq2_envsgn_old) = '1' then
-							tmp_volume := X"10" - tmp_volume;
+							tmp_volume := "10000" - tmp_volume;
 						end if;
 
-						if (sq2_envper /=  "000") and (sq2_envper_old = "000") and (tmp_volume /= "00000000") and (sq2_envsgn = '0') then 
+						if (sq2_envper /=  "000") and (sq2_envper_old = "000") and (tmp_volume /= "00000") and (sq2_envsgn = '0') then 
 							tmp_volume := tmp_volume - 1;
 						end if;
 
@@ -1483,7 +1487,7 @@ begin
 		variable noi_out         : std_logic;
 		variable noi_xor         : std_logic;
 
-		variable tmp_volume      : unsigned(7 downto 0); -- used in zombie mode
+		variable tmp_volume      : unsigned(4 downto 0); -- used in zombie mode; values 0..16
 	begin
 		noi_dac_en <= '1';
 		if noi_svol & noi_envsgn = "00000" then
@@ -1582,17 +1586,17 @@ begin
 					if ((noi_trigger = '0' and noi_trigger_r = '1') or noi_nr2change = '1') and noi_playing = '1' then
 
 						-- using sameboy's logic
-						tmp_volume := "0000" & unsigned(noi_vol);
+						tmp_volume := "0" & unsigned(noi_vol);
 
 						if noi_envsgn = '1' then 
 								tmp_volume :=  tmp_volume  + 1;
 						end if;
 
 						if (noi_envsgn xor noi_envsgn_old) = '1' then
-								tmp_volume := X"10" - tmp_volume;
+								tmp_volume := "10000" - tmp_volume;
 						end if;
 
-						if (noi_envper /=  "000") and (noi_envper_old = "000") and (tmp_volume /= "00000000") and (noi_envsgn = '0') then 
+						if (noi_envper /=  "000") and (noi_envper_old = "000") and (tmp_volume /= "00000") and (noi_envsgn = '0') then 
 								tmp_volume := tmp_volume - 1;
 						end if;
 
@@ -1648,10 +1652,27 @@ begin
 
 	-- Analog hardware emulation
 
-	sq1_dac : apu_dac port map (clk=>clk, ce=>ce, dac_en=>sq1_dac_en, dac_input=>sq1_wav,dac_output=>sq1_dac_out);
-	sq2_dac : apu_dac port map (clk=>clk, ce=>ce, dac_en=>sq2_dac_en, dac_input=>sq2_wav,dac_output=>sq2_dac_out);
-	wav_dac : apu_dac port map (clk=>clk, ce=>ce, dac_en=>wav_enable, dac_input=>wav_wav,dac_output=>wav_dac_out);
-	noi_dac : apu_dac port map (clk=>clk, ce=>ce, dac_en=>noi_dac_en, dac_input=>noi_wav,dac_output=>noi_dac_out);
+	-- One shared decay tick for the four DACs (each used to carry a private
+	-- 0..100 counter): a decaying DAC now steps on the global tick, so its
+	-- first step lands 0..100 ce after disable instead of exactly 101 -
+	-- invisible on a 255-step, ~6 ms decay ramp.
+	shared_decay : process(clk)
+	begin
+		if rising_edge(clk) and ce = '1' then
+			if dac_decay_cnt = 0 then
+				dac_decay_cnt  <= 100;
+				dac_decay_tick <= '1';
+			else
+				dac_decay_cnt  <= dac_decay_cnt - 1;
+				dac_decay_tick <= '0';
+			end if;
+		end if;
+	end process;
+
+	sq1_dac : apu_dac port map (clk=>clk, ce=>ce, decay_tick=>dac_decay_tick, dac_en=>sq1_dac_en, dac_input=>sq1_wav,dac_output=>sq1_dac_out);
+	sq2_dac : apu_dac port map (clk=>clk, ce=>ce, decay_tick=>dac_decay_tick, dac_en=>sq2_dac_en, dac_input=>sq2_wav,dac_output=>sq2_dac_out);
+	wav_dac : apu_dac port map (clk=>clk, ce=>ce, decay_tick=>dac_decay_tick, dac_en=>wav_enable, dac_input=>wav_wav,dac_output=>wav_dac_out);
+	noi_dac : apu_dac port map (clk=>clk, ce=>ce, decay_tick=>dac_decay_tick, dac_en=>noi_dac_en, dac_input=>noi_wav,dac_output=>noi_dac_out);
 
 
 	mixer : process (sq1_dac_out, sq2_dac_out, wav_dac_out, noi_dac_out, ch_map, ch_vol)
@@ -1701,6 +1722,7 @@ entity apu_dac is
 	port (
 		clk           : in std_logic;
 		ce            : in std_logic;
+		decay_tick    : in std_logic;
 		dac_en        : in std_logic;
 		dac_input     : in std_logic_vector(3 downto 0);
 		dac_output    : out signed(8 downto 0)
@@ -1711,8 +1733,6 @@ architecture apu_dac_arch of apu_dac is
 	-- Analog value has range [-256, 255], which will decay to zero when a DAC is disabled.
 	-- Sameboy uses a DAC decay speed tick of every 50 us, with 120 amplitude steps => Total decay in 6 ms.
 	-- For a 6 ms decay from max output (255), we want to tick the analog value down every ~100 clock cycles (f_clk = 4.19 MHz).
-	signal   dac_decay_timer 	: integer range 0 to 100 := 0;
-	constant DAC_DECAY_PERIOD	: integer := 100;  -- Tick rate 41.5 kHz, full decay  6.1 ms
 	signal   dac_analog 	   	: signed(8 downto 0) := (others => '0');
 
 	-- Convert a DAC input code to a pseudo-analog value
@@ -1725,27 +1745,12 @@ architecture apu_dac_arch of apu_dac is
 begin
 	dac_output <= dac_analog;
 
-	timers : process(clk, ce, dac_en, dac_analog, dac_decay_timer)
-	begin
-		if rising_edge(clk) and ce = '1' then
-			if dac_en = '1' then
-				dac_decay_timer <= DAC_DECAY_PERIOD;
-			else
-				if dac_decay_timer > 0 then
-					dac_decay_timer <= dac_decay_timer - 1;
-				else
-					dac_decay_timer <= DAC_DECAY_PERIOD; -- Automatically reset timer while DAC disabled.
-				end if;
-			end if;
-		end if;
-	end process timers;
-
-	process(clk, ce, dac_en, dac_input, dac_decay_timer) 
+	process(clk, ce, dac_en, dac_input, decay_tick) 
 	begin
 		if rising_edge(clk) and ce = '1' then
 			if dac_en = '1' then
 				dac_analog <= dac_out(dac_input);
-			elsif dac_decay_timer = 0 then
+			elsif decay_tick = '1' then
 				if dac_analog < 0 then
 					dac_analog <= dac_analog + 1;
 				elsif dac_analog > 0 then
