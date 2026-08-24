@@ -21,6 +21,21 @@ set_option -clock_route_order 1
 
 set_option -output_base_name evt1_x2_dualres
 
+# Same USERCODE stamping as build_evt1_x2.tcl - this flow previously left
+# the Gowin default (bitstream checksum), so dualres release bitstreams
+# were not traceable to their source commit.
+set repo_dir [file dirname [info script]]
+if {[catch {exec git -C $repo_dir rev-parse --short=8 HEAD} commit]} {
+    puts "WARNING: git commit unavailable, USERCODE left at default"
+} else {
+    set commit [string range [string trim $commit] 0 7]
+    if {![catch {exec git -C $repo_dir status --porcelain} dirty] && $dirty ne ""} {
+        puts "WARNING: working tree is dirty, USERCODE $commit does not identify this bitstream exactly"
+    }
+    set_option -user_code $commit
+    puts "USERCODE set to commit $commit"
+}
+
 run all
 
 
