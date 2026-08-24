@@ -1675,12 +1675,18 @@ module usbuac_ep(
     localparam SAMPLES_PER_MFRAME = (ASFREQ + 7999)/8000;
     localparam MAXBUFFER = BITS_PER_SUBSAMPLE * CH * SAMPLES_PER_MFRAME / 8;
 
-    reg write_to; /* mem area that is currently written to */
-    //reg [MAXBUFFER - 1:0][7:0] mem0;
-    //reg [MAXBUFFER - 1:0][7:0] mem1;
+    /* The double buffer used to be two 192-bit shift registers; mem1's four
+       per-bit alternatives (load mem0, load mem0 shifted by a sample,
+       shift-by-8 on pop, hold) made it a 4:1 mux per bit, ~400 LUTs for a
+       24-byte packet. Samples now land in indexed 32-bit slots, mem1 is a
+       plain enabled copy of mem0, and TX reads through one 24:1 byte mux.
+       Wire behaviour is unchanged: bytes leave oldest-first, and the old
+       partial-fill realignment is unnecessary because slot k always sits at
+       byte 4k - the stale tail past write_ptr1 is never transmitted. */
     reg [MAXBUFFER*8 - 1:0] mem0;
     reg [MAXBUFFER*8 - 1:0] mem1;
-    reg [11:0] write_ptr0;
+    reg [2:0]  wslot; /* sample slots written this microframe, 0..6 */
+    reg [4:0]  rbyte; /* next byte to present after the preloaded one */
     reg [11:0] write_ptr1;
 
     reg [3:0] pState;
@@ -1727,31 +1733,28 @@ module usbuac_ep(
         end
         switch_complete <= 0;
         if (store_state) begin
-            if (write_ptr0 != MAXBUFFER) begin
-                mem0 <= {sample, mem0[MAXBUFFER*8 - 1:32]};
-                write_ptr0 <= write_ptr0 + 12'd4;
+            if (wslot != SAMPLES_PER_MFRAME) begin
+                mem0[wslot*32 +: 32] <= sample;
+                wslot <= wslot + 3'd1;
             end
             store_state <= 1'b0;
         end else begin
             if (switch_active) begin
-                write_ptr1 <= write_ptr0;
-                if (write_ptr0 != MAXBUFFER)
-                    mem1 <= {32'd0, mem0[MAXBUFFER*8 - 1:32]};
-                else
-                    mem1 <= mem0;
-                write_ptr0 <= 12'd0;
+                write_ptr1 <= {7'd0, wslot, 2'b00};
+                mem1 <= mem0;
+                wslot <= 3'd0;
                 switch_active <= 0;
                 switch_complete <= 1;
             end
         end
         if(switch_complete) begin
             uac_txdat <= mem1[7:0];
-            mem1 <= {8'd0, mem1[MAXBUFFER*8 - 1:8]};
+            rbyte <= 5'd1;
             uac_txdat_len <= (write_ptr1 >= MAXBUFFER - 4) ? write_ptr1 : 0;
             uac_txcork <= 1'b0;
         end else if (uac_txpop) begin
-            uac_txdat <= mem1[7:0];
-            mem1 <= {8'd0, mem1[MAXBUFFER*8 - 1:8]};
+            uac_txdat <= mem1[rbyte*8 +: 8];
+            rbyte <= rbyte + 5'd1;
         end
     end
 endmodule
