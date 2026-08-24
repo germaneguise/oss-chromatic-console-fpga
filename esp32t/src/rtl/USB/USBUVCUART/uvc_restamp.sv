@@ -157,7 +157,10 @@ module uvc_restamp #(
     reg [1:0]      rep_l;              // latched at frame start
 
     wire line_ready = (w_tog_s2[r_sel] != r_tog[r_sel]);
-    wire [9:0] out_lines = 10'(SRC_H) * {8'd0, rep_l};
+    // rep_l is only ever 1 or 2 (see the latch at frame start); the
+    // multiply cost a MULT12X12 for what is a select between two
+    // elaboration-time constants.
+    wire [9:0] out_lines = (rep_l == 2'd2) ? 10'(2 * SRC_H) : 10'(SRC_H);
 
     always_ff @(posedge pclk or posedge prst) begin
         if (prst) begin
@@ -165,7 +168,6 @@ module uvc_restamp #(
             r_phase <= 2'd0; r_pass <= 1'b0; r_line <= '0; r_gap <= '0;
             r_tog <= '0; rep_l <= 2'd1;
             m_frame_valid <= 1'b0; m_line_valid <= 1'b0; m_enable <= 1'b0;
-            m_data <= 18'd0;
         end else if (frame_start) begin
             // Realign to the source frame. Everything half-emitted belongs to
             // the previous one.
@@ -214,7 +216,7 @@ module uvc_restamp #(
                         // arrives a cycle later shifts every line by a pixel.
                         // Their own packer preloads video_txdat for the same
                         // reason.
-                        m_data       <= lbuf[{r_sel, 8'd0}];
+                        // pixel 0 is fetched by the shared lbuf read port below
                     end
                 end
 
@@ -232,7 +234,7 @@ module uvc_restamp #(
                                 r_px   <= r_px + 9'd1;
                                 // Fetch the next pixel now so it is on the bus
                                 // for its own first cycle.
-                                m_data <= lbuf[{r_sel, r_px[7:0] + 8'd1}];
+                                // next pixel fetched by the shared lbuf read port below
                             end
                         end else begin
                             r_dup <= r_dup + 2'd1;   // same pixel, data unchanged
@@ -262,6 +264,18 @@ module uvc_restamp #(
                 end
             endcase
         end
+    end
+
+    /* Single lbuf read port: the two in-FSM read expressions synthesised as
+       two synchronous read ports, which duplicates the BSRAM. The guards
+       below replicate those FSM branches exactly, so m_data keeps its
+       cycle-exact PRELOADED contract (valid on the first enable cycle). */
+    wire lb_rd0 = !frame_start && (st == ST_IDLE) && (r_line < out_lines) && line_ready;
+    wire lb_rd1 = !frame_start && (st == ST_PIX) && (r_phase == 2'(CLKS_PER_PX - 1))
+                  && (r_dup == rep_l - 2'd1) && (r_px != 9'(SRC_W - 1));
+    always_ff @(posedge pclk or posedge prst) begin
+        if (prst)                  m_data <= 18'd0;
+        else if (lb_rd0 || lb_rd1) m_data <= lbuf[lb_rd0 ? {r_sel, 8'd0} : {r_sel, r_px[7:0] + 8'd1}];
     end
 
 endmodule
