@@ -561,14 +561,8 @@ module usbuvcuart_top(
 
     wire [ 1:0] s_ctl_sig;
     wire [31:0] s_dte1_rate;
-    wire [ 7:0] s_char1_format;
-    wire [ 7:0] s_parity1_type;
-    wire [ 7:0] s_data1_bits;
 
     wire [31:0] uart_dte_rate = s_dte1_rate;
-    wire [7:0]  uart_char_format = s_char1_format;
-    wire [7:0]  uart_parity_type = s_parity1_type;
-    wire [7:0]  uart_data_bits = s_data1_bits;
 
     reg [2:0] hdr_len; /* Control header offset, also indicates header ready */
     reg [15:0] cdata_ofs;
@@ -645,10 +639,7 @@ module usbuvcuart_top(
         .usb_txdat_len(cuart_txdat_len),
         .usb_txdat(cuart_txdat),
         .s_ctl_sig(s_ctl_sig),
-        .s_dte1_rate(s_dte1_rate),
-        .s_char1_format(s_char1_format),
-        .s_parity1_type(s_parity1_type),
-        .s_data1_bits(s_data1_bits));
+        .s_dte1_rate(s_dte1_rate));
 
     ctrl_uvc uvc_if_ctrl(
         .RESET_IN(RESET_IN),
@@ -1198,10 +1189,17 @@ module usbuvcuart_top(
         ,.UART_RXD   (UART_RXD            )//input
         ,.UART_RTS   (                    )// when UART_RTS = 0, UART This Device Ready to receive.
         ,.UART_CTS   (1'd0                )// when UART_CTS = 0, UART Opposite Device Ready to receive.
+        // Baud stays host-settable: esptool raises the CDC rate to 921600
+        // for flashing (the divider case supports exactly that plus the
+        // 115200 fallback). Framing is hardwired 8N1 like top.v's UART2 -
+        // the parity/stop/data-bit paths constant-fold away, and the
+        // controller's s_char1_format/s_parity1_type/s_data1_bits registers
+        // prune as dead. A host asking for non-8N1 framing silently gets
+        // 8N1, which is also all the ESP32 side ever speaks.
         ,.BAUD_RATE  (uart_dte_rate       )
-        ,.PARITY_BIT (uart_parity_type    )
-        ,.STOP_BIT   (uart_char_format    )
-        ,.DATA_BITS  (uart_data_bits      )
+        ,.PARITY_BIT (8'd0                )
+        ,.STOP_BIT   (8'd0                )
+        ,.DATA_BITS  (8'd8                )
         ,.TX_DATA    (uart_tx_data        ) //
         ,.TX_DATA_VAL(uart_tx_data_val    ) // when TX_DATA_VAL = 1, data on TX_DATA will be transmit, DATA_SEND can set to 1 only when BUSY = 0
         ,.TX_BUSY    (uart_tx_busy        ) // when BUSY = 1 transiever is busy, you must not set DATA_SEND to 1
@@ -1336,10 +1334,7 @@ module ctrl_uart(
     output reg [11:0] usb_txdat_len,
     output reg [7:0] usb_txdat,
     output reg [1:0]  s_ctl_sig,
-    output reg [31:0] s_dte1_rate,
-    output reg [7:0]  s_char1_format,
-    output reg [7:0]  s_parity1_type,
-    output reg [7:0]  s_data1_bits
+    output reg [31:0] s_dte1_rate
 );
 
     localparam  SET_LINE_CODING = 8'h20;
@@ -1367,9 +1362,6 @@ module ctrl_uart(
             usb_txval <= 1'd0;
             s_ctl_sig <= 2'd0;
             s_dte1_rate <= 32'd115200;
-            s_char1_format <= 8'd0;
-            s_parity1_type <= 8'd0;
-            s_data1_bits <= 8'd8;
             arm_ignore_ctl <= 1'b0;
             ignoring_ctl <= 1'b0;
         end else if ((header_ready) && (wIndex == {8'd0, `UART_CTRL_IFACE})) begin
@@ -1391,9 +1383,10 @@ module ctrl_uart(
                     16'd1: s_dte1_rate[15:8] <= usb_rxdat;
                     16'd2: s_dte1_rate[23:16] <= usb_rxdat;
                     16'd3: s_dte1_rate[31:24] <= usb_rxdat;
-                    16'd4: s_char1_format[7:0] <= usb_rxdat;
-                    16'd5: s_parity1_type[7:0] <= usb_rxdat;
-                    16'd6: s_data1_bits[7:0] <= usb_rxdat;
+                    /* bytes 4-6 (char format, parity, data bits) are
+                       accepted and dropped: the UART's framing is hardwired
+                       8N1 at its instantiation, so there is nothing to
+                       store. GET_LINE_CODING below reports 8N1 back. */
                     endcase
                 end
             end else if (bmRequestType == 8'hA1) begin /* Get Resquests */
@@ -1403,9 +1396,9 @@ module ctrl_uart(
                         16'd0: usb_txdat <= s_dte1_rate[15:8];
                         16'd1: usb_txdat <= s_dte1_rate[23:16];
                         16'd2: usb_txdat <= s_dte1_rate[31:24];
-                        16'd3: usb_txdat <= s_char1_format;
-                        16'd4: usb_txdat <= s_parity1_type;
-                        16'd5: usb_txdat <= s_data1_bits;
+                        16'd3: usb_txdat <= 8'd0; /* char format: 1 stop bit */
+                        16'd4: usb_txdat <= 8'd0; /* parity: none */
+                        16'd5: usb_txdat <= 8'd8; /* data bits: 8 */
                         16'd6: usb_txdat <= 8'd0;
                         endcase
                         if ((usb_txdat_len - 16'd1) == cdata_ofs)
