@@ -54,55 +54,19 @@ entity eReg_SavestateV is
    );
 end entity;
 
+-- EXPERIMENT STUB: the savestate bus master (gb_savestates) is inert in this
+-- design, so every instance's Dout_buffer can only ever hold `def`. This
+-- architecture states that outright - Dout is the constant default, the bus
+-- register and readback muxes are gone at the source. Comparing per-module
+-- synthesis area against the real architecture measures exactly how much
+-- savestate logic the optimizer fails to remove on its own.
 architecture arch of eReg_SavestateV is
 
-   signal Dout_buffer : std_logic_vector(upper downto lower) := def(upper downto lower);
-    
-   signal AdrI : std_logic_vector(BUS_Adr'left downto 0);
-    
 begin
 
-   AdrI <= std_logic_vector(to_unsigned(Adr + index, BUS_Adr'length));
+   Dout     <= def(upper downto lower);
+   BUS_Dout <= (others => '0');
 
-   process (clk)
-   begin
-      if rising_edge(clk) then
-      
-         if (BUS_rst = '1') then
-         
-            Dout_buffer <= def(upper downto lower);
-         
-         else
-      
-            if (BUS_Adr = AdrI and BUS_wren = '1') then
-               for i in lower to upper loop
-                  Dout_buffer(i) <= BUS_Din(i);  
-               end loop;
-            end if;
-          
-         end if;
-         
-      end if;
-   end process;
-   
-   Dout <= Dout_buffer;
-   
-   goutputbit: for i in lower to upper generate
-      BUS_Dout(i) <= Din(i) when BUS_Adr = AdrI else '0';
-   end generate;
-   
-   glowzero_required: if lower > 0 generate
-      glowzero: for i in 0 to lower - 1 generate
-         BUS_Dout(i) <= '0';
-      end generate;
-   end generate;
-   
-   ghighzero_required: if upper < BUS_buswidth-1 generate
-      ghighzero: for i in upper + 1 to BUS_buswidth-1 generate
-         BUS_Dout(i) <= '0';
-      end generate;
-   end generate;
-   
 end architecture;
 
 -----------------------------------------------------------------
