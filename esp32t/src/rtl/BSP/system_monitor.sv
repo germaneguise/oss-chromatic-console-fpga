@@ -400,9 +400,15 @@ module system_monitor(
         6'd18  // 6 bits major version
     };
 
-    // usb_sof_div transitions while a USB host is present. One Buttons message
-    // per transition pets the MCU's idle timer, whose only other wake source is
-    // this UART - without it the console dies 100 ms after we go quiet.
+    // usb_sof_div transitions while a USB host is present. One reserved-channel
+    // message per transition pets the MCU's idle timer, whose only other wake
+    // source is this UART - without it the console dies 100 ms after we go
+    // quiet. The pet fires on any received bytes (fpga_rx.c pets before
+    // parsing) and kRxCmd_Reserved is an explicit no-op in the MCU dispatch,
+    // so the keepalive must NOT ride the Buttons channel: the MCU treats any
+    // Buttons message as menu input ("if we're getting button data, the OSD
+    // is displayed"), so a keepalive there during gameplay feeds live button
+    // state into the menu handler and corrupts OSD visibility tracking.
     reg sof_div_s0, sof_div_s1, sof_div_s2;
     always @(posedge clk) begin
         sof_div_s0 <= usb_sof_div;   // synchronise, then edge-detect
@@ -421,12 +427,12 @@ module system_monitor(
     {
         request_gpd,                                  // Game Palette Data
         ~menuDisabled | request_SystemStatusExtended, // System Status Extended
-        ~menuDisabled,                                // reserved
+        ~menuDisabled | sof_tick,                     // reserved (doubles as USB keepalive)
         ~menuDisabled | request_version,              // version info
         ~menuDisabled,                                // pmic sys status
         ~menuDisabled,                                // System Control
         ~menuDisabled | updateBrightness,             // Audio + Brightness
-        ~menuDisabled | request_buttons | sof_tick,    // Buttons
+        ~menuDisabled | request_buttons,              // Buttons
         (~menuDisabled & transmitVolt & bat_is_LI),   // Lithium
         (~menuDisabled & transmitVolt & ~bat_is_LI)   // AA
     };
