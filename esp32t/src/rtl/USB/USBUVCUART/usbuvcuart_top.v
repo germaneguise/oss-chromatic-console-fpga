@@ -1765,20 +1765,26 @@ module audioclk_gen(input pClk, input reset, output bclk, output aclk);
     parameter AFREQ = 44100;
     parameter BFREQ = AFREQ * 32;
 
-    reg [31:0] count;
+    // The accumulator lattice divides through by gcd(FREQ_SUM, BFREQ) =
+    // 9600 (30,000,000 -> 3,125; 1,411,200 -> 147): the produced edge
+    // sequence is bit-identical and the counter fits 12 bits (max 3,271).
+    localparam FREQ_SUM_R = FREQ_SUM / 9600;
+    localparam BFREQ_R    = BFREQ / 9600;
+
+    reg [11:0] count;
     reg [4:0] acount;
     reg bclkin;
 
     always @(posedge pClk or posedge reset) begin
         if (reset) begin
-            count <= 32'd0;
+            count <= 12'd0;
             acount <= 6'd0;
             bclkin <= 0;
         end else begin
-            if (count < FREQ_SUM)
-                count <= count + BFREQ;
+            if (count < FREQ_SUM_R)
+                count <= count + BFREQ_R;
             else begin
-                count <= count - FREQ_SUM + BFREQ;
+                count <= count - FREQ_SUM_R + BFREQ_R;
                 bclkin <= ~bclkin;
                 if (~bclkin)
                     acount <= acount + 5'd1;
