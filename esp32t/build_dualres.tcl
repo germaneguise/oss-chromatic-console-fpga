@@ -15,7 +15,7 @@ source build_evt1_x2_nofinish.tcl
 # default effort PnR gave up with 754 unrouted nets. Same settings our own
 # chromatic examples use, where they were also not cosmetic.
 set_option -place_option 2
-set_option -route_option 1
+set_option -route_option 2
 set_option -replicate_resources 1
 set_option -clock_route_order 1
 
