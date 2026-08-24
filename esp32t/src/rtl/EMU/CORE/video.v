@@ -196,19 +196,35 @@ reg [5:0] bgpi; //Bit 0-5   Index (00-3F)
 reg bgpi_ai;    //Bit 7     Auto Increment  (0=Disabled, 1=Increment after Writing)
 
 //FF69 - BCPD/BGPD - Background Palette Data
-reg[7:0] bgpd [63:0] /* synthesis syn_ramstyle = "distributed_ram" */; //64 bytes
-wire [7:0] bug1 = bgpd[0];
+/* CGB palette storage lives in BSRAM byte banks, not flops: the old
+   reg[63:0] arrays never mapped to RAM (multiple asynchronous read ports:
+   the PPU pair-read, CPU readback and fixed gpd_out taps), so each palette
+   cost 512 FF plus ~500 LUTs of 64:1 read muxing and write decode. Reads
+   are now synchronous, which is invisible at the consumers: the pixel path
+   samples only on ce (address stable 4 hClk beforehand) and CPU accesses
+   are far slower than the 1 hClk read latency. PPU reads (mode 3) and CPU
+   accesses (vram_cpu_allow) are mutually exclusive, so one read port per
+   palette serves both. gpd_out's eight fixed bytes are shadowed in flops
+   at write time. Power-up contents are 0 (the boot ROM writes every entry
+   before use) - the old simulation-only SS_BPAL preload and readback are
+   dropped with the arrays. */
+reg[7:0] bgpd_even [31:0] /* synthesis syn_ramstyle = "block_ram" */;
+reg[7:0] bgpd_odd  [31:0] /* synthesis syn_ramstyle = "block_ram" */;
+reg [7:0] bgpd_even_q, bgpd_odd_q;
 
 //FF6A - OCPS/OBPI - Sprite Palette Index
 reg [5:0] obpi; //Bit 0-5   Index (00-3F)
 reg obpi_ai;    //Bit 7     Auto Increment  (0=Disabled, 1=Increment after Writing)
 
 //FF6B - OCPD/OBPD - Sprite Palette Data
-reg[7:0] obpd [63:0] /* synthesis syn_ramstyle = "distributed_ram" */; //64 bytes
-wire [7:0] bug2 = obpd[0];
+reg[7:0] obpd_even [31:0] /* synthesis syn_ramstyle = "block_ram" */;
+reg[7:0] obpd_odd  [31:0] /* synthesis syn_ramstyle = "block_ram" */;
+reg [7:0] obpd_even_q, obpd_odd_q;
 
 // Combined game palette data for games' default palette detection
-assign gpd_out = {bgpd[2], bgpd[3], bgpd[4], bgpd[5], obpd[10], obpd[11], obpd[12], obpd[13]};
+reg [7:0] gpd_bg2, gpd_bg3, gpd_bg4, gpd_bg5;
+reg [7:0] gpd_ob10, gpd_ob11, gpd_ob12, gpd_ob13;
+assign gpd_out = {gpd_bg2, gpd_bg3, gpd_bg4, gpd_bg5, gpd_ob10, gpd_ob11, gpd_ob12, gpd_ob13};
 
 //FF6C Bit 0 OBJ priority mode select
 // 0: smaller OBJ-NO has higher priority (GBC)
@@ -410,29 +426,6 @@ assign SS_Video2_BACK[61:54] = lyc_r_dmg;
 assign SS_Video2_BACK[   62] = ff6c_opri;
 assign SS_Video2_BACK[   63] = obj_prio_dmg_mode;
 
-genvar palI;
-generate
-	for (palI=0;palI<8;palI=palI+1) begin : palette_readback
-// synthesis translate_off
-		assign SS_BPAL_BACK[palI][ 7: 0] = bgpd[palI*8+0];
-		assign SS_BPAL_BACK[palI][15: 8] = bgpd[palI*8+1];
-		assign SS_BPAL_BACK[palI][23:16] = bgpd[palI*8+2];
-		assign SS_BPAL_BACK[palI][31:24] = bgpd[palI*8+3];
-		assign SS_BPAL_BACK[palI][39:32] = bgpd[palI*8+4];
-		assign SS_BPAL_BACK[palI][47:40] = bgpd[palI*8+5];
-		assign SS_BPAL_BACK[palI][55:48] = bgpd[palI*8+6];
-		assign SS_BPAL_BACK[palI][63:56] = bgpd[palI*8+7];
-		assign SS_OPAL_BACK[palI][ 7: 0] = obpd[palI*8+0];
-		assign SS_OPAL_BACK[palI][15: 8] = obpd[palI*8+1];
-		assign SS_OPAL_BACK[palI][23:16] = obpd[palI*8+2];
-		assign SS_OPAL_BACK[palI][31:24] = obpd[palI*8+3];
-		assign SS_OPAL_BACK[palI][39:32] = obpd[palI*8+4];
-		assign SS_OPAL_BACK[palI][47:40] = obpd[palI*8+5];
-		assign SS_OPAL_BACK[palI][55:48] = obpd[palI*8+6];
-		assign SS_OPAL_BACK[palI][63:56] = obpd[palI*8+7];
-// synthesis translate_on
-	end
-endgenerate
 
 
 // Use negedge on some registers to pass tests
@@ -472,41 +465,6 @@ always @(posedge clk) begin
 		ff6c_opri <= SS_Video2[   62]; // 1'b0;
 		obj_prio_dmg_mode <= SS_Video2[   63]; // 1'b0;
 
-// synthesis translate_off
-		bgpd[ 0] <= SS_BPAL[0][ 7: 0]; bgpd[16] <= SS_BPAL[2][ 7: 0]; bgpd[32] <= SS_BPAL[4][ 7: 0]; bgpd[48] <= SS_BPAL[6][ 7: 0]; //8'h00;
-		bgpd[ 1] <= SS_BPAL[0][15: 8]; bgpd[17] <= SS_BPAL[2][15: 8]; bgpd[33] <= SS_BPAL[4][15: 8]; bgpd[49] <= SS_BPAL[6][15: 8]; //8'h00;
-		bgpd[ 2] <= SS_BPAL[0][23:16]; bgpd[18] <= SS_BPAL[2][23:16]; bgpd[34] <= SS_BPAL[4][23:16]; bgpd[50] <= SS_BPAL[6][23:16]; //8'h00;
-		bgpd[ 3] <= SS_BPAL[0][31:24]; bgpd[19] <= SS_BPAL[2][31:24]; bgpd[35] <= SS_BPAL[4][31:24]; bgpd[51] <= SS_BPAL[6][31:24]; //8'h00;
-		bgpd[ 4] <= SS_BPAL[0][39:32]; bgpd[20] <= SS_BPAL[2][39:32]; bgpd[36] <= SS_BPAL[4][39:32]; bgpd[52] <= SS_BPAL[6][39:32]; //8'h00;
-		bgpd[ 5] <= SS_BPAL[0][47:40]; bgpd[21] <= SS_BPAL[2][47:40]; bgpd[37] <= SS_BPAL[4][47:40]; bgpd[53] <= SS_BPAL[6][47:40]; //8'h00;
-		bgpd[ 6] <= SS_BPAL[0][55:48]; bgpd[22] <= SS_BPAL[2][55:48]; bgpd[38] <= SS_BPAL[4][55:48]; bgpd[54] <= SS_BPAL[6][55:48]; //8'h00;
-		bgpd[ 7] <= SS_BPAL[0][63:56]; bgpd[23] <= SS_BPAL[2][63:56]; bgpd[39] <= SS_BPAL[4][63:56]; bgpd[55] <= SS_BPAL[6][63:56]; //8'h00;
-		bgpd[ 8] <= SS_BPAL[1][ 7: 0]; bgpd[24] <= SS_BPAL[3][ 7: 0]; bgpd[40] <= SS_BPAL[5][ 7: 0]; bgpd[56] <= SS_BPAL[7][ 7: 0]; //8'h00;
-		bgpd[ 9] <= SS_BPAL[1][15: 8]; bgpd[25] <= SS_BPAL[3][15: 8]; bgpd[41] <= SS_BPAL[5][15: 8]; bgpd[57] <= SS_BPAL[7][15: 8]; //8'h00;
-		bgpd[10] <= SS_BPAL[1][23:16]; bgpd[26] <= SS_BPAL[3][23:16]; bgpd[42] <= SS_BPAL[5][23:16]; bgpd[58] <= SS_BPAL[7][23:16]; //8'h00;
-		bgpd[11] <= SS_BPAL[1][31:24]; bgpd[27] <= SS_BPAL[3][31:24]; bgpd[43] <= SS_BPAL[5][31:24]; bgpd[59] <= SS_BPAL[7][31:24]; //8'h00;
-		bgpd[12] <= SS_BPAL[1][39:32]; bgpd[28] <= SS_BPAL[3][39:32]; bgpd[44] <= SS_BPAL[5][39:32]; bgpd[60] <= SS_BPAL[7][39:32]; //8'h00;
-		bgpd[13] <= SS_BPAL[1][47:40]; bgpd[29] <= SS_BPAL[3][47:40]; bgpd[45] <= SS_BPAL[5][47:40]; bgpd[61] <= SS_BPAL[7][47:40]; //8'h00;
-		bgpd[14] <= SS_BPAL[1][55:48]; bgpd[30] <= SS_BPAL[3][55:48]; bgpd[46] <= SS_BPAL[5][55:48]; bgpd[62] <= SS_BPAL[7][55:48]; //8'h00;
-		bgpd[15] <= SS_BPAL[1][63:56]; bgpd[31] <= SS_BPAL[3][63:56]; bgpd[47] <= SS_BPAL[5][63:56]; bgpd[63] <= SS_BPAL[7][63:56]; //8'h00;
-      
-		obpd[ 0] <= SS_OPAL[0][ 7: 0]; obpd[16] <= SS_OPAL[2][ 7: 0]; obpd[32] <= SS_OPAL[4][ 7: 0]; obpd[48] <= SS_OPAL[6][ 7: 0]; //8'h00;
-		obpd[ 1] <= SS_OPAL[0][15: 8]; obpd[17] <= SS_OPAL[2][15: 8]; obpd[33] <= SS_OPAL[4][15: 8]; obpd[49] <= SS_OPAL[6][15: 8]; //8'h00;
-		obpd[ 2] <= SS_OPAL[0][23:16]; obpd[18] <= SS_OPAL[2][23:16]; obpd[34] <= SS_OPAL[4][23:16]; obpd[50] <= SS_OPAL[6][23:16]; //8'h00;
-		obpd[ 3] <= SS_OPAL[0][31:24]; obpd[19] <= SS_OPAL[2][31:24]; obpd[35] <= SS_OPAL[4][31:24]; obpd[51] <= SS_OPAL[6][31:24]; //8'h00;
-		obpd[ 4] <= SS_OPAL[0][39:32]; obpd[20] <= SS_OPAL[2][39:32]; obpd[36] <= SS_OPAL[4][39:32]; obpd[52] <= SS_OPAL[6][39:32]; //8'h00;
-		obpd[ 5] <= SS_OPAL[0][47:40]; obpd[21] <= SS_OPAL[2][47:40]; obpd[37] <= SS_OPAL[4][47:40]; obpd[53] <= SS_OPAL[6][47:40]; //8'h00;
-		obpd[ 6] <= SS_OPAL[0][55:48]; obpd[22] <= SS_OPAL[2][55:48]; obpd[38] <= SS_OPAL[4][55:48]; obpd[54] <= SS_OPAL[6][55:48]; //8'h00;
-		obpd[ 7] <= SS_OPAL[0][63:56]; obpd[23] <= SS_OPAL[2][63:56]; obpd[39] <= SS_OPAL[4][63:56]; obpd[55] <= SS_OPAL[6][63:56]; //8'h00;
-		obpd[ 8] <= SS_OPAL[1][ 7: 0]; obpd[24] <= SS_OPAL[3][ 7: 0]; obpd[40] <= SS_OPAL[5][ 7: 0]; obpd[56] <= SS_OPAL[7][ 7: 0]; //8'h00;
-		obpd[ 9] <= SS_OPAL[1][15: 8]; obpd[25] <= SS_OPAL[3][15: 8]; obpd[41] <= SS_OPAL[5][15: 8]; obpd[57] <= SS_OPAL[7][15: 8]; //8'h00;
-		obpd[10] <= SS_OPAL[1][23:16]; obpd[26] <= SS_OPAL[3][23:16]; obpd[42] <= SS_OPAL[5][23:16]; obpd[58] <= SS_OPAL[7][23:16]; //8'h00;
-		obpd[11] <= SS_OPAL[1][31:24]; obpd[27] <= SS_OPAL[3][31:24]; obpd[43] <= SS_OPAL[5][31:24]; obpd[59] <= SS_OPAL[7][31:24]; //8'h00;
-		obpd[12] <= SS_OPAL[1][39:32]; obpd[28] <= SS_OPAL[3][39:32]; obpd[44] <= SS_OPAL[5][39:32]; obpd[60] <= SS_OPAL[7][39:32]; //8'h00;
-		obpd[13] <= SS_OPAL[1][47:40]; obpd[29] <= SS_OPAL[3][47:40]; obpd[45] <= SS_OPAL[5][47:40]; obpd[61] <= SS_OPAL[7][47:40]; //8'h00;
-		obpd[14] <= SS_OPAL[1][55:48]; obpd[30] <= SS_OPAL[3][55:48]; obpd[46] <= SS_OPAL[5][55:48]; obpd[62] <= SS_OPAL[7][55:48]; //8'h00;
-		obpd[15] <= SS_OPAL[1][63:56]; obpd[31] <= SS_OPAL[3][63:56]; obpd[47] <= SS_OPAL[5][63:56]; obpd[63] <= SS_OPAL[7][63:56]; //8'h00;
-// synthesis translate_on
 
 	end else if (ce_cpu) begin
 		if(cpu_sel_reg && cpu_wr) begin
@@ -531,7 +489,15 @@ always @(posedge clk) begin
 						 end
 				8'h69: if (isGBC_mode) begin
 							if (vram_cpu_allow) begin
-								bgpd[bgpi] <= cpu_di;
+								if (bgpi[0]) bgpd_odd[bgpi[5:1]] <= cpu_di;
+								else         bgpd_even[bgpi[5:1]] <= cpu_di;
+								case (bgpi) // shadow the bytes gpd_out taps
+									6'd2: gpd_bg2 <= cpu_di;
+									6'd3: gpd_bg3 <= cpu_di;
+									6'd4: gpd_bg4 <= cpu_di;
+									6'd5: gpd_bg5 <= cpu_di;
+									default: ;
+								endcase
 							end
 							//"Writing to FF69 during rendering still causes auto-increment to occur."
 							if (bgpi_ai) bgpi <= bgpi + 6'h1;
@@ -542,7 +508,15 @@ always @(posedge clk) begin
 						 end
 				8'h6B: if (isGBC_mode) begin
 							if (vram_cpu_allow) begin
-								obpd[obpi] <= cpu_di;
+								if (obpi[0]) obpd_odd[obpi[5:1]] <= cpu_di;
+								else         obpd_even[obpi[5:1]] <= cpu_di;
+								case (obpi)
+									6'd10: gpd_ob10 <= cpu_di;
+									6'd11: gpd_ob11 <= cpu_di;
+									6'd12: gpd_ob12 <= cpu_di;
+									6'd13: gpd_ob13 <= cpu_di;
+									default: ;
+								endcase
 							end
 							if (obpi_ai) obpi <= obpi + 6'h1;
 						 end
@@ -576,9 +550,9 @@ assign cpu_do =
 	(cpu_addr == 8'h4b)?wx:
 	isGBC?
 		(cpu_addr == 8'h68)?{bgpi_ai,1'd1,bgpi}:
-		(cpu_addr == 8'h69 && isGBC_mode && vram_cpu_allow)?bgpd[bgpi]:
+		(cpu_addr == 8'h69 && isGBC_mode && vram_cpu_allow)?(bgpi[0] ? bgpd_odd_q : bgpd_even_q):
 		(cpu_addr == 8'h6a)?{obpi_ai,1'd1,obpi}:
-		(cpu_addr == 8'h6b && isGBC_mode && vram_cpu_allow)?obpd[obpi]:
+		(cpu_addr == 8'h6b && isGBC_mode && vram_cpu_allow)?(obpi[0] ? obpd_odd_q : obpd_even_q):
 		(cpu_addr == 8'h6c) ? { 7'h7f, ff6c_opri } :
 		8'hff:
 	8'hff;
@@ -1105,7 +1079,7 @@ assign paletteCustomOBJ[15] = paletteOBJ1In[63:56];
 
 // apply bg palette
 wire [2:0] palette_index_gb = palette_index[2:0];
-wire [14:0] gbc_paletteBG = isGBC ? {bgpd[palette_index+1][6:0], bgpd[palette_index]} : // gbc
+wire [14:0] gbc_paletteBG = isGBC ? {bgpd_odd_q[6:0], bgpd_even_q} : // gbc
                                     {13'd0, bgp_data};
 wire [14:0] pix_rgb_data = (customPaletteEna && ~isGBC_mode) ? {paletteCustomBG[palette_index_gb+1][6:0], paletteCustomBG[palette_index_gb]} : // custom
                                                                 gbc_paletteBG;
@@ -1115,7 +1089,19 @@ wire [2:0] spr_cgb_pal_out = {spr_cgb_pal_shift[2][7], spr_cgb_pal_shift[1][7], 
 wire [5:0] sprite_palette_index = isGBC_mode ? {spr_cgb_pal_out, sprite_pixel_data, 1'b0 } : //gbc game
                                                {sprite_pixel_cmap, obp_data, 1'b0}; //GB game in GBC mode
 
-wire [14:0] gbc_paletteSprite = isGBC ? {obpd[sprite_palette_index+1][6:0], obpd[sprite_palette_index]} : // gbc
+/* One synchronous read port per palette: the CPU owns it whenever
+   vram_cpu_allow (never during mode 3), the PPU otherwise. Both bytes of a
+   colour come back in one read - palette indices are always even. */
+wire [4:0] bgpd_raddr = vram_cpu_allow ? bgpi[5:1] : palette_index[5:1];
+wire [4:0] obpd_raddr = vram_cpu_allow ? obpi[5:1] : sprite_palette_index[5:1];
+always @(posedge clk) begin
+	bgpd_even_q <= bgpd_even[bgpd_raddr];
+	bgpd_odd_q  <= bgpd_odd [bgpd_raddr];
+	obpd_even_q <= obpd_even[obpd_raddr];
+	obpd_odd_q  <= obpd_odd [obpd_raddr];
+end
+
+wire [14:0] gbc_paletteSprite = isGBC ? {obpd_odd_q[6:0], obpd_even_q} : // gbc
                                         {13'd0, obp_data};
 wire [14:0] sprite_pix = (customPaletteEna && ~isGBC_mode) ? {paletteCustomOBJ[sprite_palette_index+1][6:0], paletteCustomOBJ[sprite_palette_index]} : // custom
                                                               gbc_paletteSprite;
