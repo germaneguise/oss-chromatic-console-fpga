@@ -79,8 +79,10 @@ reg                             last_acknowledge;
 logic                           _last_acknowledge;
 logic                           _saved_read_write;
 reg                             saved_read_write;
-reg     [15:0]                  divider_counter;
-logic   [15:0]                  _divider_counter;
+// Counts only to `divider` (a constant 20 at the sole instantiation); the
+// comparison against the 16-bit port zero-extends and folds.
+reg     [4:0]                   divider_counter;
+logic   [4:0]                   _divider_counter;
 reg                             divider_tick;
 logic   [DATA_WIDTH-1:0]        _miso_data;
 logic                           _busy;
