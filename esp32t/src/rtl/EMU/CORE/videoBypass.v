@@ -512,7 +512,23 @@ assign bg_fetch_done = (bg_fetch_cycle >= 3'd5);
 wire sprite_fetch_done = (sprite_fetch_hold && sprite_fetch_cycle >= 3'd5);
 
 // The first B01 cycle does not fetch sprites so wait until the bg shift register is not empty
-assign sprite_fetch_hold = sprite_found & ~bg_shift_empty;
+//
+// NOT IN THE BYPASS PPU. This module drives the screen while the LCD is off,
+// and its lcd_data is a constant - 15'h7FFF or a palette register, never a
+// rendered pixel (see the assign at the bottom). So the sprite engine cannot
+// change a single output bit; all it does is stall pcnt on OAM contents that
+// nothing will draw. It does not fold on its own: the instance below passes
+// sprite_en(1'b0), but sprites.v gates on (isGBC | sprite_en) and isGBC is
+// hardwired 1'b1 there, so the whole fetch path stays live.
+//
+// Cutting the stall leaves the pixel count alone - pcnt still runs 8..167, so
+// still exactly 160 lcd_clk per line, which is what uvc_restamp's line
+// contract depends on. What moves is WHEN inside the line: pcnt reaches 168
+// earlier, so mode 3 ends earlier and hblank is correspondingly longer. The
+// line's duration is unchanged, being set by end_of_line off the dot counter.
+// sprite_addr/attr/index were already dead; oam_eval is not, so the instance
+// stays and synthesis prunes what it can.
+assign sprite_fetch_hold = 1'b0;
 
 reg [3:0] bg_shift_cnt = 4'd0;
 assign bg_shift_empty = (bg_shift_cnt == 0);
