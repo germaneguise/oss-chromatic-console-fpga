@@ -410,7 +410,8 @@ module top #(parameter ISSIMU=0)
         .hHsync(gb_lcd_mode[1]),
         .hVsync(gb_lcd_vsync),
         .hWrBurstQ(hWrBurstQ),
-        .hWrBurstQ2(hWrBurstQ2)
+        .hWrBurstQ2(hWrBurstQ2),
+        .hDrawOSD(hDrawOSD)
     );
 
     wire IR_RX_FILTER;

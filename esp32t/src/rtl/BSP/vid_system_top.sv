@@ -142,9 +142,15 @@ module vid_system_top #(parameter ISSIMU=0)
     wire [6:0] sum_g = {hWrBurstQ[9:5],1'd0} + {gb_lcd_data[9:5],1'd0};
     wire [6:0] sum_b = {hWrBurstQ[14:10],1'd0} + {gb_lcd_data[14:10],1'd0};
 
-    wire [5:0]  game_r  =   frameBlendEnable ? sum_r[6:1] : {gb_lcd_data[4:0],1'b0};
-    wire [5:0]  game_g  =   frameBlendEnable ? sum_g[6:1] : {gb_lcd_data[9:5],1'b0};
-    wire [5:0]  game_b  =   frameBlendEnable ? sum_b[6:1] : {gb_lcd_data[14:10],1'b0};
+    /* Blending is off while the OSD is up: the single line reader is
+       fetching the OSD plane on those frames, so hWrBurstQ carries menu
+       pixels, not frame history - and the menu covers the screen, so the
+       blend result was invisible anyway. hDrawOSD only changes at vsync,
+       so the switch is frame-aligned. */
+    wire blendNow = frameBlendEnable & ~hDrawOSD;
+    wire [5:0]  game_r  =   blendNow ? sum_r[6:1] : {gb_lcd_data[4:0],1'b0};
+    wire [5:0]  game_g  =   blendNow ? sum_g[6:1] : {gb_lcd_data[9:5],1'b0};
+    wire [5:0]  game_b  =   blendNow ? sum_b[6:1] : {gb_lcd_data[14:10],1'b0};
     
     wire [17:0] psel = {game_b,game_g,game_r};
 

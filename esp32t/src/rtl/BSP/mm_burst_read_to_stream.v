@@ -3,15 +3,18 @@
 // Generates an output stream aligned with the input timings
 // by performing memory mapped burst reads
 
-module mm_burst_read_to_stream #(
-    parameter base_pointer = 23'h0
-)
+module mm_burst_read_to_stream
 (
     input               hClk,
     input               hVsync,
     input               hHsync,
     input               hValid,
-    input               xClk,    
+    input               xClk,
+    /* Was a parameter. The reader serves two planes now - the frame-blend
+       history and the OSD - selected per frame: the base is sampled at
+       xStartOfFrame, exactly where the parameter used to be loaded, so a
+       change mid-frame takes effect at the next frame boundary. */
+    input      [22:0]   xBasePointer,
         
     input               xRamReady,
     input               xStreamValid,
@@ -100,7 +103,7 @@ module mm_burst_read_to_stream #(
     begin
         if(xStartOfFrame)
         begin
-            xGbAddress <= base_pointer;
+            xGbAddress <= xBasePointer;
         end
         else
             if(xEndOfLine)

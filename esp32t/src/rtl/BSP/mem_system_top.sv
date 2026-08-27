@@ -29,7 +29,8 @@ module mem_system_top #(parameter ISSIMU=0)
     input               hVsync,
     output              qMenuInit,
     output  [15:0]      hWrBurstQ,
-    output  [15:0]      hWrBurstQ2
+    output  [15:0]      hWrBurstQ2,
+    input               hDrawOSD
 );
     
     // Was 5 with RAMPORT_BIST = 0. Must stay in lockstep with RAMPORTCOUNT in
@@ -157,53 +158,55 @@ module mem_system_top #(parameter ISSIMU=0)
         .xAddress(RAMIn_addr[RAMPORT_QSPI])
     );
     
-    mm_burst_read_to_stream #(
-        .base_pointer(23'h10000)
-    )   u_mm_burst_read_to_stream(
+    /* ONE line reader for two planes. The OSD instance duplicated this one
+       - its own block, its own MPMC channel - to read a second plane the
+       display only ever shows INSTEAD of frame blending: with the OSD up,
+       the menu covers the screen and the blend result is invisible. So the
+       single reader retargets per frame: the OSD plane while hDrawOSD (a
+       signal vid_system_top already latches at vsync), the frame-blend
+       history otherwise, and vid_system_top disables blending on OSD
+       frames. Frees a block and an MPMC channel.
+
+       hDrawOSD changes only at the hVsync edge; two xClk flops settle it
+       well inside the 3-4 cycles before the module's own xStartOfFrame
+       samples the base, and a one-frame slip either way at the toggle is a
+       menu appearing one frame late at worst. */
+    reg [1:0] xDrawOSD_sr;
+    always @(posedge xClk)
+        xDrawOSD_sr <= {xDrawOSD_sr[0], hDrawOSD};
+
+    mm_burst_read_to_stream u_mm_burst_read_to_stream(
         .hClk(hClk),
         .hVsync(hVsync),
         .hHsync(hHsync),
         .hValid(hValid),
         .xClk(xClk),
-        
+        .xBasePointer(xDrawOSD_sr[1] ? 23'h0 : 23'h10000),
+
         .xRamReady(RAM_init_done),
         .xStreamValid(RAMOut_dout_valid[RAMPORT_FBRD]),
         .xStreamData(RAM_dout),
         .xWrBurstDone(RAMOut_done[RAMPORT_FBRD]),
         .xGbReqRead(RAMIn_request[RAMPORT_FBRD]),
-        
+
         .hWrBurstQ(hWrBurstQ),
         .xGbAddress(RAMIn_addr[RAMPORT_FBRD])
     );
 
-    reg hVsync_r1;
-    reg hHsync_r1;
-    reg hValid_r1;
-    always@(posedge hClk)
-        begin
-        hVsync_r1 <= hVsync;
-        hHsync_r1 <= hHsync;
-        hValid_r1 <= hValid;
-    end
+    /* The OSD consumer's timing contract is one hClk behind the blend
+       consumer's - the deleted instance ran on _r1-delayed syncs - so its
+       data is the same stream registered once. It only carries OSD pixels
+       on frames where hDrawOSD retargeted the reader; on other frames the
+       consumers of hWrBurstQ2 are gated off by hDrawOSD anyway. */
+    reg [15:0] hWrBurstQ2_r;
+    always @(posedge hClk)
+        hWrBurstQ2_r <= hWrBurstQ;
+    assign hWrBurstQ2 = hWrBurstQ2_r;
 
-    mm_burst_read_to_stream #(
-        .base_pointer(23'h0)
-    ) u_mm_burst_read_to_stream_osd(
-        .hClk(hClk),
-        .hVsync(hVsync_r1),
-        .hHsync(hHsync_r1),
-        .hValid(hValid_r1),
-        .xClk(xClk),
-                
-        .xRamReady(RAM_init_done),
-        .xStreamValid(RAMOut_dout_valid[RAMPORT_FBRDOSD]),
-        .xStreamData(RAM_dout),
-        .xWrBurstDone(RAMOut_done[RAMPORT_FBRDOSD]),
-        .xGbReqRead(RAMIn_request[RAMPORT_FBRDOSD]),
-        
-        .hWrBurstQ(hWrBurstQ2),
-        .xGbAddress(RAMIn_addr[RAMPORT_FBRDOSD])
-    );
+    /* The freed channel idles; the port stays for the memory-controller
+       refactor to reclaim. */
+    assign RAMIn_request[RAMPORT_FBRDOSD]      = 1'b0;
+    assign RAMIn_addr[RAMPORT_FBRDOSD]         = 23'd0;
 
     
     gb_burst_write u_gb_burst_write(
