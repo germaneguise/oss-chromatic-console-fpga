@@ -208,18 +208,22 @@ reg bgpi_ai;    //Bit 7     Auto Increment  (0=Disabled, 1=Increment after Writi
    at write time. Power-up contents are 0 (the boot ROM writes every entry
    before use) - the old simulation-only SS_BPAL preload and readback are
    dropped with the arrays. */
-reg[7:0] bgpd_even [31:0] /* synthesis syn_ramstyle = "block_ram" */;
-reg[7:0] bgpd_odd  [31:0] /* synthesis syn_ramstyle = "block_ram" */;
-reg [7:0] bgpd_even_q, bgpd_odd_q;
+/* The even/odd split is now two byte lanes of ONE block, not two blocks:
+   a 32x8 array is a whole 18 Kbit BSRAM holding 256 bits, and there were
+   four of them. SDPB's write and read ports take independent widths, so
+   port A stays byte-wide (the CPU writes one byte at a time, selected by
+   index bit 0) while port B reads the 16-bit pair the pixel path wants.
+   Inference cannot express that - a partial-word write splits straight back
+   into two byte-lane blocks - so the primitive is instantiated by hand.
+   See the SDPB instances further down, next to bgpd_raddr. */
+wire [7:0] bgpd_even_q, bgpd_odd_q;
 
 //FF6A - OCPS/OBPI - Sprite Palette Index
 reg [5:0] obpi; //Bit 0-5   Index (00-3F)
 reg obpi_ai;    //Bit 7     Auto Increment  (0=Disabled, 1=Increment after Writing)
 
 //FF6B - OCPD/OBPD - Sprite Palette Data
-reg[7:0] obpd_even [31:0] /* synthesis syn_ramstyle = "block_ram" */;
-reg[7:0] obpd_odd  [31:0] /* synthesis syn_ramstyle = "block_ram" */;
-reg [7:0] obpd_even_q, obpd_odd_q;
+wire [7:0] obpd_even_q, obpd_odd_q;
 
 // Combined game palette data for games' default palette detection
 reg [7:0] gpd_bg2, gpd_bg3, gpd_bg4, gpd_bg5;
@@ -489,8 +493,7 @@ always @(posedge clk) begin
 						 end
 				8'h69: if (isGBC_mode) begin
 							if (vram_cpu_allow) begin
-								if (bgpi[0]) bgpd_odd[bgpi[5:1]] <= cpu_di;
-								else         bgpd_even[bgpi[5:1]] <= cpu_di;
+								// palette store write is driven by bgpd_wr at the SDPB
 								case (bgpi) // shadow the bytes gpd_out taps
 									6'd2: gpd_bg2 <= cpu_di;
 									6'd3: gpd_bg3 <= cpu_di;
@@ -508,8 +511,7 @@ always @(posedge clk) begin
 						 end
 				8'h6B: if (isGBC_mode) begin
 							if (vram_cpu_allow) begin
-								if (obpi[0]) obpd_odd[obpi[5:1]] <= cpu_di;
-								else         obpd_even[obpi[5:1]] <= cpu_di;
+								// palette store write is driven by obpd_wr at the SDPB
 								case (obpi)
 									6'd10: gpd_ob10 <= cpu_di;
 									6'd11: gpd_ob11 <= cpu_di;
@@ -1094,12 +1096,63 @@ wire [5:0] sprite_palette_index = isGBC_mode ? {spr_cgb_pal_out, sprite_pixel_da
    colour come back in one read - palette indices are always even. */
 wire [4:0] bgpd_raddr = vram_cpu_allow ? bgpi[5:1] : palette_index[5:1];
 wire [4:0] obpd_raddr = vram_cpu_allow ? obpi[5:1] : sprite_palette_index[5:1];
+
+/* Write strobes, hoisted out of the FF69/FF6B register block above so the
+   store can be a primitive. Same conditions the array writes had. */
+wire bgpd_wr = ~reset & ce_cpu & cpu_sel_reg & cpu_wr & isGBC
+             & (cpu_addr == 8'h69) & isGBC_mode & vram_cpu_allow;
+wire obpd_wr = ~reset & ce_cpu & cpu_sel_reg & cpu_wr & isGBC
+             & (cpu_addr == 8'h6B) & isGBC_mode & vram_cpu_allow;
+
+/* Address wiring is width-dependent on this primitive: at BIT_WIDTH 8 the
+   byte index sits in AD[13:3], at BIT_WIDTH 16 the word index sits in
+   AD[13:4] (the low bits are the within-word offset and read as zero).
+   64 bytes / 32 colours, so only AD[8:3] and AD[8:4] carry anything. */
+wire [31:0] bgpd_do, obpd_do;
+
+SDPB #(
+	.READ_MODE(1'b0), .BIT_WIDTH_0(8), .BIT_WIDTH_1(16),
+	.BLK_SEL_0(3'b000), .BLK_SEL_1(3'b000), .RESET_MODE("SYNC")
+) bgpd_ram (
+	.DO(bgpd_do), .DI({24'd0, cpu_di}),
+	.BLKSELA(3'b000), .BLKSELB(3'b000),
+	.ADA({5'd0, bgpi[5:0], 3'd0}), .ADB({5'd0, bgpd_raddr, 4'd0}),
+	.CLKA(clk), .CEA(bgpd_wr), .CLKB(clk), .CEB(1'b1),
+	.OCE(1'b0), .RESET(1'b0)
+);
+
+SDPB #(
+	.READ_MODE(1'b0), .BIT_WIDTH_0(8), .BIT_WIDTH_1(16),
+	.BLK_SEL_0(3'b000), .BLK_SEL_1(3'b000), .RESET_MODE("SYNC")
+) obpd_ram (
+	.DO(obpd_do), .DI({24'd0, cpu_di}),
+	.BLKSELA(3'b000), .BLKSELB(3'b000),
+	.ADA({5'd0, obpi[5:0], 3'd0}), .ADB({5'd0, obpd_raddr, 4'd0}),
+	.CLKA(clk), .CEA(obpd_wr), .CLKB(clk), .CEB(1'b1),
+	.OCE(1'b0), .RESET(1'b0)
+);
+
+/* Read-during-write bypass. A CPU palette write always collides with the
+   readback read - both address off bgpi in the same cycle - and SDPB does
+   not define what port B returns then. The inferred arrays this replaces
+   were covered by -rw_check_on_ram; reproduce it explicitly so the output
+   is defined on the collision cycle rather than depending on CPU timing to
+   avoid sampling it. */
+reg       bgpd_byp_e, bgpd_byp_o, obpd_byp_e, obpd_byp_o;
+reg [7:0] bgpd_byp_d, obpd_byp_d;
 always @(posedge clk) begin
-	bgpd_even_q <= bgpd_even[bgpd_raddr];
-	bgpd_odd_q  <= bgpd_odd [bgpd_raddr];
-	obpd_even_q <= obpd_even[obpd_raddr];
-	obpd_odd_q  <= obpd_odd [obpd_raddr];
+	bgpd_byp_e <= bgpd_wr & ~bgpi[0] & (bgpi[5:1] == bgpd_raddr);
+	bgpd_byp_o <= bgpd_wr &  bgpi[0] & (bgpi[5:1] == bgpd_raddr);
+	bgpd_byp_d <= cpu_di;
+	obpd_byp_e <= obpd_wr & ~obpi[0] & (obpi[5:1] == obpd_raddr);
+	obpd_byp_o <= obpd_wr &  obpi[0] & (obpi[5:1] == obpd_raddr);
+	obpd_byp_d <= cpu_di;
 end
+
+assign bgpd_even_q = bgpd_byp_e ? bgpd_byp_d : bgpd_do[ 7:0];
+assign bgpd_odd_q  = bgpd_byp_o ? bgpd_byp_d : bgpd_do[15:8];
+assign obpd_even_q = obpd_byp_e ? obpd_byp_d : obpd_do[ 7:0];
+assign obpd_odd_q  = obpd_byp_o ? obpd_byp_d : obpd_do[15:8];
 
 wire [14:0] gbc_paletteSprite = isGBC ? {obpd_odd_q[6:0], obpd_even_q} : // gbc
                                         {13'd0, obp_data};
