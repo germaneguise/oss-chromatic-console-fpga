@@ -68,19 +68,26 @@ end
 // at power-up.
 reg [13:0] dly;
 reg        en;
-reg [15:0] out_l, out_r;
+// Was out_l/out_r, gated with "en ? core : 0". The gating was redundant -
+// DC_blocker's mute (driven by ~en) already forces the output to zero - so
+// these are now a plain capture of the sample instant. Same register count,
+// and the integrator gets real samples during the ramp instead of zeros, so
+// it is already settled when en releases. Both channels are captured on the
+// same edge, which is what lets the shared filter below walk them on
+// consecutive cycles without pulling them a sample apart.
+reg [15:0] hold_l, hold_r;
 always @(posedge clk or posedge reset) begin
 	if (reset) begin
-		dly   <= 14'd0;
-		en    <= 1'b0;
-		out_l <= 16'd0;
-		out_r <= 16'd0;
+		dly    <= 14'd0;
+		en     <= 1'b0;
+		hold_l <= 16'd0;
+		hold_r <= 16'd0;
 	end
 	else if (sample_ce) begin
 		if (!dly[13]) dly <= dly + 1'd1;
 		else          en  <= 1'b1;
-		out_l <= en ? core_l : 16'd0;
-		out_r <= en ? core_r : 16'd0;
+		hold_l <= core_l;
+		hold_r <= core_r;
 	end
 end
 
@@ -99,41 +106,69 @@ end
 // IIR low-pass). It has no multipliers, just shifts and adds, so it costs
 // ~160 FF and no DSP - the 8 MULT27X36 that made audio_filter expensive were
 // all in IIR_filter, which stays deleted.
-DC_blocker dcb_l (.clk(clk), .ce(sample_ce), .sample_rate(1'b0),
-                  .mute(~en), .din(out_l), .dout(filter_l));
-
-DC_blocker dcb_r (.clk(clk), .ce(sample_ce), .sample_rate(1'b0),
-                  .mute(~en), .din(out_r), .dout(filter_r));
+DC_blocker_2ch dcb (.clk(clk), .ce(sample_ce), .mute(~en),
+                    .din_l(hold_l), .din_r(hold_r),
+                    .dout_l(filter_l), .dout_r(filter_r));
 
 endmodule
 
 
-// Lifted unchanged from Gameboy_MiSTer's iir_filter.sv so that file can stay
-// out of the build. With sample_rate=0 the pole is 1 - 2^-9, which at
-// sample_ce = hclk/256 = 65536 Hz is a 20.4 Hz corner.
-module DC_blocker
+// Was two DC_blocker instances lifted from Gameboy_MiSTer's iir_filter.sv.
+// The maths is unchanged - with sample_rate=0 the pole is 1 - 2^-9, a 20.4 Hz
+// corner at sample_ce = hclk/256 = 65536 Hz - but the two channels now share
+// one arithmetic unit instead of having one each.
+//
+// WHY THAT IS FREE: ce fires once every 256 clocks and the datapath is purely
+// combinational within a cycle, so each channel used its adders for 1 cycle in
+// 256 and idled for the other 255. Two channels fit in the gap with 254 to
+// spare. Only the state is per-channel; the four 40-bit add/subs are not.
+//
+// The channels are walked on the two cycles AFTER ce, not starting on it, so
+// both read the same captured sample. Walking them on ce and ce+1 would give
+// the right channel a sample the left had not seen yet - a 22.7 us stereo
+// offset, which is audible as a shifted image. The remaining skew is one clock
+// between the two register updates, 59.6 ns, inside a window where the value
+// is held stable for 15.3 us either side for the asynchronous gClk consumers.
+// Both channels still carry the same sample index; nothing moves on the audio
+// timeline.
+module DC_blocker_2ch
 (
 	input         clk,
-	input         ce,
+	input         ce,          // one pulse per stereo sample
 	input         mute,
-
-	input         sample_rate,
-	input  [15:0] din,
-	output [15:0] dout
+	input  [15:0] din_l,
+	input  [15:0] din_r,
+	output [15:0] dout_l,
+	output [15:0] dout_r
 );
 
-reg  [39:0] x1, y;
+reg [39:0] x1 [0:1];
+reg [39:0] y  [0:1];
 
-wire [39:0] x  = {din[15], din, 23'd0};
-wire [39:0] x0 = x - (sample_rate ? {{11{x[39]}}, x[39:11]} : {{10{x[39]}}, x[39:10]});
-wire [39:0] y1 = y - (sample_rate ? {{10{y[39]}}, y[39:10]} : {{09{y[39]}}, y[39:09]});
-wire [39:0] y0 = x0 - x1 + y1;
-
-always @(posedge clk) if(ce) begin
-	x1 <= x0;
-	y  <= ^y0[39:38] ? {{2{y0[39]}},{38{y0[38]}}} : y0;
+// ph: 0 idle, 1 = left this cycle, 2 = right this cycle.
+reg [1:0] ph = 2'd0;
+always @(posedge clk) begin
+	if (ce)              ph <= 2'd1;
+	else if (ph == 2'd1) ph <= 2'd2;
+	else                 ph <= 2'd0;
 end
 
-assign dout = mute ? 16'd0 : y[38:23];
+wire        active = ph[0] | ph[1];
+wire        chan   = ph[1];
+wire [15:0] din    = chan ? din_r : din_l;
+
+wire [39:0] x  = {din[15], din, 23'd0};
+wire [39:0] x0 = x - {{10{x[39]}}, x[39:10]};
+wire [39:0] yc = y[chan];
+wire [39:0] y1 = yc - {{09{yc[39]}}, yc[39:09]};
+wire [39:0] y0 = x0 - x1[chan] + y1;
+
+always @(posedge clk) if (active) begin
+	x1[chan] <= x0;
+	y[chan]  <= ^y0[39:38] ? {{2{y0[39]}},{38{y0[38]}}} : y0;
+end
+
+assign dout_l = mute ? 16'd0 : y[0][38:23];
+assign dout_r = mute ? 16'd0 : y[1][38:23];
 
 endmodule
