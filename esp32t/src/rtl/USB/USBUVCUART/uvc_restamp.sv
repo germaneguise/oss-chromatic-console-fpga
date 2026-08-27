@@ -43,7 +43,16 @@ module uvc_restamp #(
     parameter int SRC_W       = 160,
     parameter int SRC_H       = 144,
     parameter int NBUF        = 4,     // 2 suffices; BSRAM is nearly free
-    parameter int CLKS_PER_PX = 3,     // their hCount3 contract
+    parameter int CLKS_PER_PX = 3,     // their hCount3 contract (OUTPUT side)
+    /* Source shape. 0 = the panel-scanout contract this was written for:
+       s_enable is a level across the active line and a pixel lasts
+       CLKS_PER_PX cycles. 1 = a strobed source, one cycle of s_enable per
+       pixel, which is what the emulator's own lcd_clkena is (gb.v forces it
+       low whenever ce is low, so it is never a level). A strobed source has
+       no "enable fell, so the line ended" moment - between every pixel looks
+       like a line end - so in that mode the line is published on pixel count
+       instead. CLKS_PER_PX still governs the output side either way. */
+    parameter int SRC_STROBED = 0,
     parameter int LINE_GAP    = 16,    // output blanking, ends a line for them
     parameter int FRAME_LEAD  = 16     // frame_valid leads enable, see below
 ) (
@@ -53,6 +62,17 @@ module uvc_restamp #(
     input  wire        s_frame_valid,
     input  wire        s_enable,
     input  wire [17:0] s_data,
+    /* SRC_STROBED only. One-cycle pulse, hclk, marking the end of a source
+       line - the same event ST7785_panel_master resets its write counter on
+       (the delayed FALLING edge of gb_lcd_mode[1], i.e. mode 3 -> mode 0).
+       A strobed source has no enable-falling edge to end a line on, and
+       ending purely on pixel count jams forever if a line ever delivers
+       fewer than SRC_W: the buffer never fills, never publishes, and the
+       next line's pixels append to it. With this, a short line is DISCARDED
+       and the write side resyncs - still whole-line-or-nothing, but able to
+       recover. Full lines publish the moment they fill, so this adds no
+       latency. Tie low to fall back to count-only. */
+    input  wire        s_line_end,
 
     // ---- output side, pClk ----
     input  wire        pclk,
@@ -102,6 +122,25 @@ module uvc_restamp #(
                 w_sel       <= '0;
                 w_idx       <= '0;
                 w_phase     <= 2'd0;
+            end else if (SRC_STROBED != 0) begin
+                // Strobed source: one pixel per asserted cycle. Gaps between
+                // strobes carry no meaning, so nothing keys off s_enable
+                // falling; the line ends when it fills, and a line that
+                // reaches its boundary short is dropped rather than left to
+                // absorb the next line.
+                if (s_line_end) begin
+                    w_idx <= '0;          // short line: discard, do not publish
+                end else if (s_enable && w_idx < 9'(SRC_W)) begin
+                    lbuf[{w_sel, w_idx[7:0]}] <= s_data;
+                    if (w_idx == 9'(SRC_W) - 9'd1) begin
+                        w_tog[w_sel] <= ~w_tog[w_sel];
+                        w_idx        <= '0;
+                        w_sel        <= (w_sel == SELW'(NBUF-1)) ? '0
+                                                                : w_sel + SELW'(1);
+                    end else begin
+                        w_idx <= w_idx + 9'd1;
+                    end
+                end
             end else if (s_enable) begin
                 // Capture one pixel per CLKS_PER_PX cycles.
                 if (w_phase == 2'(CLKS_PER_PX - 1)) begin

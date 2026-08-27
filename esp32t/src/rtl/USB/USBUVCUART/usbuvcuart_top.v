@@ -14,6 +14,10 @@ module usbuvcuart_top(
     output              pClk,
     output              usblocked,
     input               hClk,
+    /* Video source clock. Separate from hClk because hClk is still the audio
+       path's gClk (usbuac_ep samples left/right across it); only the video
+       feed moved off panel scanout onto the emulator's own clock. */
+    input               vidClk,
     input               hLineValid,
     input               hEnable,
     input               hFrameValid,
@@ -876,15 +880,29 @@ module usbuvcuart_top(
     wire        rFrameValid, rLineValid, rEnable;
     wire [17:0] rData;
 
+    /* Source line end, the same event ST7785_panel_master keys its write
+       counter off: the FALLING edge of hLineValid (gb_lcd_mode[1], so mode 3
+       -> mode 0, the end of the drawing period), delayed 15 cycles so the
+       line's last pixels have cleared the colour-correction pipeline before
+       anything acts on it. Same shift-register shape as gbhsync there, kept
+       local so the video path stays decoupled from the panel. */
+    reg [15:0] vid_hs_sr;
+    always @(posedge vidClk) vid_hs_sr <= {vid_hs_sr[14:0], hLineValid};
+    wire vid_line_end = vid_hs_sr[15] & ~vid_hs_sr[14];
+
     uvc_restamp #(
         .SRC_W(`SRC_WIDTH),
-        .SRC_H(`SRC_HEIGHT)
+        .SRC_H(`SRC_HEIGHT),
+        /* esp32t feeds this from the emulator's lcd_clkena, which is a
+           one-cycle strobe per pixel, not panel DE. */
+        .SRC_STROBED(1)
     ) u_restamp (
-        .hclk          (hClk),
+        .hclk          (vidClk),
         .hrst          (RESET_IN),
         .s_frame_valid (hFrameValid),
         .s_enable      (hEnable),
         .s_data        (hData),
+        .s_line_end    (vid_line_end),
         .pclk          (pClk),
         .prst          (RESET_IN),
         .rep           (vRep),
@@ -904,7 +922,7 @@ module usbuvcuart_top(
        terminating packet's length is Rnum + HEADER_SIZE. */
     localparam VFIFO_SINGLE_CLOCK = 1;
 `else
-    wire        vClk        = hClk;
+    wire        vClk        = vidClk;
     wire        vFrameValid = hFrameValid;
     wire        vLineValid  = hLineValid;
     wire        vEnable     = hEnable;

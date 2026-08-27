@@ -11,8 +11,17 @@ module vid_system_top #(parameter ISSIMU=0)
     output reg          slideOutActive,
 
     output [5:0]        LCD_DB,
-    output              LCD_ENABLE_UVC,
-    output [17:0]       LCD_DB_UVC,
+    /* UVC feed, hClk domain. It used to be tapped off panel scanout, which
+       cost 18 of the panel line buffer's 36 bits to carry a second pixel
+       through a buffer that exists for the panel's benefit. uvc_restamp
+       regenerates the whole raster contract on the pClk side and only ever
+       consumes frame-valid, enable and data at source rate, so it can take
+       them here - already colour-corrected and overlaid - and the panel
+       buffer narrows to the one pixel it is actually for. */
+    output              uvcValid,
+    output              uvcVsync,
+    output              uvcHsync,
+    output [17:0]       uvcData,
     output              LCD_DOTCLK,
     output              LCD_ENABLE,
     output              LCD_HSYNC,
@@ -409,6 +418,11 @@ module vid_system_top #(parameter ISSIMU=0)
     wire [17:0] hColorPixelUVC = overlayCrush ? {2'd0,hColorPixelUVCCorrected[17:14],2'd0,hColorPixelUVCCorrected[11:8],2'd0,hColorPixelUVCCorrected[5:2]} : 
                                  overlayActive ? overlayColor : hColorPixelUVCCorrected;
 
+    assign uvcValid = hValidCorrected;
+    assign uvcVsync = hVsyncCorrected;
+    assign uvcHsync = hHsyncCorrected;
+    assign uvcData  = hColorPixelUVC;
+
     ST7785_panel_master u_ST7785_panel_master(
         .gClk(gClk),
         .nRST(LCD_INIT_DONE),
@@ -417,7 +431,6 @@ module vid_system_top #(parameter ISSIMU=0)
         .hHsync(hHsyncCorrected),
         .hVsync(hVsyncCorrected),
         .hColorPixel(hColorPixelLCD),
-        .hColorPixelUVC(hColorPixelUVC),
 
         .lcd_on(gb_lcd_on),
         .LCD_EN(LCD_EN),
@@ -425,9 +438,7 @@ module vid_system_top #(parameter ISSIMU=0)
         .LCD_HSYNC(LCD_HSYNC),
         .LCD_VSYNC(LCD_VSYNC),
         .LCD_GENLOCK(LCD_GENLOCK),
-        .LCD_DB(LCD_DB),
-        .LCD_ENABLE_UVC(LCD_ENABLE_UVC),
-        .LCD_DB_UVC(LCD_DB_UVC)
+        .LCD_DB(LCD_DB)
     );
 
 endmodule

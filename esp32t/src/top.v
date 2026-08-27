@@ -243,7 +243,9 @@ module top #(parameter ISSIMU=0)
     wire [22:0]       hGBAddress;
     wire              hGBWrite;
     wire [15:0]       hGBData;
-    wire              LCD_ENABLE_UVC;
+    wire              uvcValid;
+    wire              uvcVsync;
+    wire              uvcHsync;
 
 
     reg LCD_VSYNC_r1;
@@ -276,7 +278,7 @@ module top #(parameter ISSIMU=0)
 
     wire [31:0] debug_system;
     wire [15:0] system_control;
-    wire [17:0] LCD_DB_UVC;
+    wire [17:0] uvcData;
     wire menuDisabled;
     wire slideOutActive;
     wire hDrawOSD;
@@ -291,8 +293,10 @@ module top #(parameter ISSIMU=0)
         .slideOutActive(slideOutActive),
 
         .LCD_DB(LCD_DB),
-        .LCD_ENABLE_UVC(LCD_ENABLE_UVC),
-        .LCD_DB_UVC(LCD_DB_UVC),
+        .uvcValid(uvcValid),
+        .uvcVsync(uvcVsync),
+        .uvcHsync(uvcHsync),
+        .uvcData(uvcData),
         .LCD_DOTCLK(LCD_DOTCLK),
         .LCD_ENABLE(LCD_ENABLE),
         .LCD_HSYNC(LCD_HSYNC),
@@ -585,12 +589,15 @@ module top #(parameter ISSIMU=0)
     assign HDMI_CLK_P = gb_lcd_clkena;
     assign HDMI_CLK_N = hGBWrite;
 
+    /* Was a gClk re-register of panel scanout (LCD_HSYNC/LCD_VSYNC/
+       LCD_ENABLE_UVC/LCD_DB_UVC) on its way to the UVC path. The feed comes
+       off hClk now, so the staging moves to hClk with it. */
     reg hr1;
     reg vr1;
     reg he1;
     reg [17:0] d1;
 
-    always@(posedge gClk or posedge memrst)
+    always@(posedge hClk or posedge memrst)
     begin
         if(memrst)
         begin
@@ -601,10 +608,10 @@ module top #(parameter ISSIMU=0)
         end
         else
         begin
-            hr1 <= LCD_HSYNC;
-            vr1 <= LCD_VSYNC;
-            he1 <= LCD_ENABLE_UVC;
-            d1  <= LCD_DB_UVC;
+            hr1 <= uvcHsync;
+            vr1 <= uvcVsync;
+            he1 <= uvcValid;
+            d1  <= uvcData;
         end
     end
 
@@ -634,6 +641,7 @@ module top #(parameter ISSIMU=0)
         .pClk(PHY_CLKOUT),
         .usblocked(usblocked),
         .hClk(gClk),
+        .vidClk(hClk),
 
         .UART_TXD(UART_RXD), // output
         .UART_RXD(UART_TXD), // input

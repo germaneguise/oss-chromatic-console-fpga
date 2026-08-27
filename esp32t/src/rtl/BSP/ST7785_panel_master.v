@@ -4,7 +4,6 @@ module ST7785_panel_master(
 
     input               hClk,
     input       [17:0]  hColorPixel,
-    input       [17:0]  hColorPixelUVC,
     input               lcd_on,
     input               hVsync,
     input               hHsync,
@@ -14,9 +13,7 @@ module ST7785_panel_master(
     output  reg         LCD_HSYNC,
     output  reg         LCD_VSYNC,
     output  reg         LCD_GENLOCK,
-    output  reg [5:0]   LCD_DB,
-    output  reg         LCD_ENABLE_UVC,
-    output  reg [17:0]  LCD_DB_UVC
+    output  reg [5:0]   LCD_DB
 );
     
     parameter       H_Lw             = 16'd30; 
@@ -67,12 +64,25 @@ module ST7785_panel_master(
         valid_r1 <= hValid;
         
 
-    wire [17:0] color_pixeluvc;
     wire [17:0] color_pixelp;
     
+    /* One pixel wide, not two. The second 18 bits used to carry the UVC copy
+       so usbuvcuart_top could tap panel scanout; that feed now comes straight
+       off the hClk domain in vid_system_top, where uvc_restamp's source-rate
+       inputs already exist. Halving the WIDTH is what frees the block.
+
+       DEPTH STAYS 1024, and must. The width change alone already fits one
+       block, so a shallower buffer buys nothing - and it is not spare. This
+       is a circular buffer whose read side is deliberately held several rows
+       behind the write side (see FINE_OFFSET and the lcd_on_aligned comment
+       below), and that lag is a pointer difference: 1024 entries span 6.4
+       lines of it, 512 spans 3.2, and once the lag exceeds the buffer the
+       read pointer wraps past the write pointer instead of trailing it,
+       displacing the image horizontally. 1024 also keeps the wrap arithmetic
+       identical to the shipping design. */
     localparam DEPTH = 1024;
-    reg [35:0] lineBuffer [DEPTH-1:0];
-    reg [35:0]  lineBuffer_q;
+    reg [17:0] lineBuffer [DEPTH-1:0];
+    reg [17:0]  lineBuffer_q;
 
     reg [9:0]   lineBuffer_wa;
     reg [7:0]   lineBuffer_wrCount;
@@ -108,7 +118,7 @@ module ST7785_panel_master(
 
     always@(posedge hClk)
         if(hValid&&(lineBuffer_wrCount <= 8'd159))
-            lineBuffer[lineBuffer_wa]  <=  {hColorPixelUVC, hColorPixel};
+            lineBuffer[lineBuffer_wa]  <=  hColorPixel;
 
     reg [1:0] phase;
     reg [7:0] hoffset;
@@ -166,8 +176,7 @@ module ST7785_panel_master(
     always@(posedge gClk)
         lineBuffer_q <= lineBuffer[lineBuffer_ra];
 
-    assign color_pixeluvc = lineBuffer_q[35:18];
-    assign color_pixelp = lineBuffer_q[17:0];
+    assign color_pixelp = lineBuffer_q;
 
     localparam FINE_OFFSET = 11'd418;
     reg [10:0] fineDelay;
@@ -246,21 +255,15 @@ module ST7785_panel_master(
                 if(phase == 0)
                     LCD_DB <= color_pixelp[5:0]; // Red
 
-                LCD_DB_UVC <= color_pixeluvc;
-                LCD_ENABLE_UVC <= LCD_DEI_r2;
             end
             else
             begin
                 LCD_DB          <= {6{1'b1}};
-                LCD_DB_UVC      <= {18{1'b1}};
-                LCD_ENABLE_UVC  <= LCD_DEI_r2;
             end
         end
         else
         begin
             LCD_DB <= 'd0;
-            LCD_DB_UVC <= 'd0;
-            LCD_ENABLE_UVC <= 1'd0;
         end
     end
 
