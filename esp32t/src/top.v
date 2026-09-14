@@ -56,7 +56,7 @@ module top #(parameter ISSIMU=0)
     inout               QSPI_MISO,      // Q D7 IO19 - flash bridge drives flash MISO back on it
     inout               QSPI_WP,        // WP D6 IO22 - flash bridge data lane during quad-read data
     inout               QSPI_HD,        // HD D5 IO21 CC - flash bridge data lane during quad-read data
-    output  reg         ESP32_MCU_D4,   // RXD
+    output              ESP32_MCU_D4,   // RXD
     input               ESP32_MCU_D3,   // TXD
 
     output              FPGA_LED_EN,
@@ -682,17 +682,19 @@ module top #(parameter ISSIMU=0)
     wire UART_RXD;
     wire PHY_CLKOUT;
     wire usblocked;
+    wire mcu_status_txd;
+    reg  mcu_rxd_q = 1'd1;
     always@(posedge PHY_CLKOUT or negedge usblocked)
     begin
         if(~usblocked)
         begin
             UART_TXD     <= 1'd1;
-            ESP32_MCU_D4 <= 1'd1;
+            mcu_rxd_q    <= 1'd1;
         end
         else
         begin
             UART_TXD     <= ESP32_MCU_D3;
-            ESP32_MCU_D4 <= UART_RXD;
+            mcu_rxd_q    <= UART_RXD;
         end
     end
     wire UART_DTR;
@@ -724,6 +726,10 @@ module top #(parameter ISSIMU=0)
             ESP_BOOT_DELAY_SHIFT <= 8'b0;
             ESP32_EN <= 0;
         end
+
+        // Hold the MCU in reset while this gateware is loaded: its firmware may not speak our protocols.
+        ESP32_EN  <= 1'b0;
+        ESP32_IO0 <= 1'b1;
     end
 
     always@(posedge PHY_CLKOUT or negedge usblocked)
@@ -743,14 +749,10 @@ module top #(parameter ISSIMU=0)
     wire clk24;
     wire [7:0] debugs;
 
-    assign HDMI_D_P[2] = lcd_on_int;
-    assign HDMI_D_N[2] = hDrawOSD;
-    assign HDMI_D_P[1] = lcd_off_overwrite;
-    assign HDMI_D_N[1] = gb_lcd_on;
-    assign HDMI_D_P[0] = gb_lcd_vsync;
-    assign HDMI_D_N[0] = gb_lcd_mode[1];
-    assign HDMI_CLK_P = gb_lcd_clkena;
-    assign HDMI_CLK_N = hGBWrite;
+    assign HDMI_D_P   = 3'bzzz;
+    assign HDMI_D_N   = 3'bzzz;
+    assign HDMI_CLK_P = 1'bz;
+    assign HDMI_CLK_N = 1'bz;
 
     reg hr1;
     reg vr1;
@@ -941,7 +943,7 @@ module top #(parameter ISSIMU=0)
         .CLK(gClk), // clock
         .RST(~lock_o), // reset
         // UART INTERFACE
-        .UART_TXD(ESP32_MCU_D11), //output
+        .UART_TXD(mcu_status_txd), //output
         .UART_RXD(ESP32_MCU_D12), //input
         .UART_RTS(), //output // when UART_RTS = 0, UART This Device Ready to receive.
         .UART_CTS(1'd0), //input// when UART_CTS = 0, UART Opposite Device Ready to receive.
@@ -959,6 +961,9 @@ module top #(parameter ISSIMU=0)
         .RX_DATA_VAL(uart_rx_val)//output
     );
 
-    assign I2S_BCLK = menuDisabled;
+    // MCU held in reset: nothing drives its pins.
+    assign ESP32_MCU_D11 = 1'bz;
+    assign ESP32_MCU_D4  = 1'bz;
+    assign I2S_BCLK      = 1'bz;
 
 endmodule

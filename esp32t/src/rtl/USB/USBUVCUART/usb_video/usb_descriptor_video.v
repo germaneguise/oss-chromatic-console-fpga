@@ -214,7 +214,7 @@ module usb_desc #(
         descrom[7]  <= 8'h40;// 08: 40:bMaxPacketSize0 = 64 bytes
         descrom[8]  <= VENDORID[7 : 0];// idVendor
         descrom[9]  <= VENDORID[15 :8];
-        descrom[10] <= 'd0;//PRODUCTID[7 :0];// idProduct
+        descrom[10] <= 8'h01;// idProduct: fixed, not the player number (the MCU may never send it)
         descrom[11] <= PRODUCTID[15 :8];
         descrom[12] <= VERSIONBCD[7 : 0];// bcdDevice
         descrom[13] <= VERSIONBCD[15 : 8];
@@ -793,7 +793,6 @@ module usb_desc #(
         playerNum_prev <= playerNum;
         if(playerNum_prev != playerNum)
         begin
-            descrom[10] <= playerNum;
             if(playerNum[7:4] > 9)
                 descrom[DESC_STRPRODUCT_ADDR + 19*2 + 2] <= 8'h37 + {4'd0, playerNum[7:4]};
             else
